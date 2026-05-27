@@ -85,7 +85,7 @@ export function renderEditPage(options: EditPageOptions): string {
     "Edit todo",
     `
       <main class="auth-shell">
-        <section class="panel" aria-labelledby="edit-heading">
+        <section class="panel panel-edit" aria-labelledby="edit-heading">
           <p class="eyebrow">Edit item</p>
           <h1 id="edit-heading">${escapeHtml(options.todo.title ?? options.todo.body)}</h1>
           ${renderNotice(options.error, "error")}
@@ -136,7 +136,7 @@ function renderTodoList(todos: ReadonlyArray<TodoItem>): string {
 
 function renderTodoCard(todo: TodoItem, index: number, todos: ReadonlyArray<TodoItem>): string {
   const primaryText = todo.title ?? todo.body;
-  const bodyHtml = todo.title === null ? "" : `<p>${escapeHtml(todo.body)}</p>`;
+  const bodyHtml = todo.title === null ? "" : `<p class="todo-description">${escapeHtml(todo.body)}</p>`;
   const isFirst = index === 0;
   const isLast = index === todos.length - 1;
 
@@ -144,7 +144,7 @@ function renderTodoCard(todo: TodoItem, index: number, todos: ReadonlyArray<Todo
     <li class="todo-card" data-todo-id="${escapeAttribute(todo.id)}">
       <button class="drag-handle" type="button" data-drag-handle aria-label="Drag to reorder ${escapeAttribute(primaryText)}">Grip</button>
       <article aria-labelledby="todo-${escapeAttribute(todo.id)}-heading">
-        <h3 id="todo-${escapeAttribute(todo.id)}-heading">${escapeHtml(primaryText)}</h3>
+        <h3 id="todo-${escapeAttribute(todo.id)}-heading" class="todo-title">${escapeHtml(primaryText)}</h3>
         ${bodyHtml}
         <div class="todo-actions">
           <a href="/todos/${encodeURIComponent(todo.id)}/edit">Edit</a>
@@ -327,6 +327,10 @@ function renderStyles(): string {
       box-shadow: var(--shadow);
     }
 
+    .panel-edit {
+      width: min(42rem, 100%);
+    }
+
     .stack {
       display: grid;
       gap: 0.65rem;
@@ -419,6 +423,13 @@ function renderStyles(): string {
       margin: 0.4rem 0 0;
       color: #394239;
       white-space: pre-wrap;
+    }
+
+    .todo-title,
+    .todo-description {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .todo-actions {
