@@ -40,6 +40,8 @@ export function renderLoginPage(options: LoginPageOptions): string {
 }
 
 export function renderTodoPage(options: TodoPageOptions): string {
+  const createModalNotice = renderNotice(options.error, "error");
+
   return renderLayout(
     "Todos",
     `
@@ -53,30 +55,44 @@ export function renderTodoPage(options: TodoPageOptions): string {
         </form>
       </header>
       <main class="app-shell">
-        <section class="composer panel" aria-labelledby="new-todo-heading">
-          <h1 id="new-todo-heading">Add item</h1>
-          ${renderNotice(options.error, "error")}
-          <form action="/todos" method="post" class="stack">
-            <label for="title">Title <span class="muted">(optional)</span></label>
-            <input id="title" name="title" type="text" maxlength="160">
-            <label for="body">Description</label>
-            <textarea id="body" name="body" rows="4" required></textarea>
-            <button type="submit">Add todo</button>
-          </form>
-        </section>
         <section class="panel" aria-labelledby="todo-list-heading">
           <div class="list-heading">
             <div>
               <p class="eyebrow">Active list</p>
               <h2 id="todo-list-heading">Todos</h2>
             </div>
-            <p class="muted">${options.todos.length.toString()} active</p>
+            <div class="list-heading-actions">
+              <p class="muted">${options.todos.length.toString()} active</p>
+              <button type="button" class="secondary" data-open-create-dialog>Add item</button>
+            </div>
           </div>
           ${renderTodoList(options.todos)}
         </section>
       </main>
+      <dialog class="modal-shell" data-create-dialog aria-labelledby="new-todo-heading">
+        <section class="panel panel-edit panel-modal">
+          <div class="modal-heading">
+            <div>
+              <p class="eyebrow">Active list</p>
+              <h1 id="new-todo-heading">Add item</h1>
+            </div>
+            <button type="button" class="icon-button secondary" data-close-create-dialog aria-label="Close add item dialog">Close</button>
+          </div>
+          ${createModalNotice}
+          <form action="/todos" method="post" class="stack">
+            <label for="title">Title <span class="muted">(optional)</span></label>
+            <input id="title" name="title" type="text" maxlength="160">
+            <label for="body">Description</label>
+            <textarea id="body" name="body" rows="7" required></textarea>
+            <div class="button-row">
+              <button type="submit">Add todo</button>
+              <button type="button" class="secondary" data-close-create-dialog>Cancel</button>
+            </div>
+          </form>
+        </section>
+      </dialog>
     `,
-    renderClientScript(),
+    renderClientScript(options.error !== null),
   );
 }
 
@@ -304,9 +320,7 @@ function renderStyles(): string {
     }
 
     .app-shell {
-      display: grid;
-      grid-template-columns: minmax(16rem, 22rem) 1fr;
-      gap: 1rem;
+      padding-top: 1rem;
     }
 
     .topbar {
@@ -329,6 +343,11 @@ function renderStyles(): string {
 
     .panel-edit {
       width: min(42rem, 100%);
+    }
+
+    .panel-modal {
+      width: min(52rem, 100%);
+      margin: 0;
     }
 
     .stack {
@@ -377,6 +396,18 @@ function renderStyles(): string {
       gap: 1rem;
     }
 
+    .list-heading-actions,
+    .modal-heading {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .list-heading-actions {
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
     .todo-list {
       display: grid;
       gap: 0.85rem;
@@ -387,12 +418,16 @@ function renderStyles(): string {
 
     .todo-card {
       display: grid;
-      grid-template-columns: auto 1fr;
+      grid-template-columns: auto minmax(0, 1fr);
       gap: 0.85rem;
       padding: 1rem;
       border: 1px solid var(--line);
       border-radius: 1.25rem;
       background: white;
+    }
+
+    .todo-card article {
+      min-width: 0;
     }
 
     .todo-card.dragging {
@@ -425,8 +460,8 @@ function renderStyles(): string {
       white-space: pre-wrap;
     }
 
-    .todo-title,
-    .todo-description {
+    .todo-card .todo-title,
+    .todo-card .todo-description {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -457,14 +492,29 @@ function renderStyles(): string {
       font-weight: 700;
     }
 
-    @media (max-width: 760px) {
-      .app-shell {
-        grid-template-columns: 1fr;
-      }
+    .modal-shell {
+      width: min(56rem, calc(100% - 2rem));
+      max-width: none;
+      border: 0;
+      padding: 0;
+      background: transparent;
+    }
 
+    .modal-shell::backdrop {
+      background: rgba(24, 33, 27, 0.32);
+      backdrop-filter: blur(0.25rem);
+    }
+
+    .icon-button {
+      min-height: 2.35rem;
+      padding: 0.55rem 0.9rem;
+    }
+
+    @media (max-width: 760px) {
       .topbar,
       .list-heading,
-      .button-row {
+      .button-row,
+      .modal-heading {
         align-items: stretch;
         flex-direction: column;
       }
@@ -476,17 +526,54 @@ function renderStyles(): string {
       .drag-handle {
         width: fit-content;
       }
+
+      .modal-shell {
+        width: calc(100% - 1rem);
+      }
     }
   `;
 }
 
-function renderClientScript(): string {
+function renderClientScript(openCreateDialogByDefault: boolean): string {
   return `
     <script>
       const list = document.querySelector("[data-todo-list]");
+      const createDialog = document.querySelector("[data-create-dialog]");
+      const openCreateDialogButton = document.querySelector("[data-open-create-dialog]");
+      const closeCreateDialogButtons = Array.from(document.querySelectorAll("[data-close-create-dialog]"));
       let draggingCard = null;
       let pointerId = null;
       let longPressTimer = 0;
+
+      function openCreateDialog() {
+        if (!(createDialog instanceof HTMLDialogElement) || createDialog.open) {
+          return;
+        }
+
+        createDialog.showModal();
+      }
+
+      function closeCreateDialog() {
+        if (!(createDialog instanceof HTMLDialogElement) || !createDialog.open) {
+          return;
+        }
+
+        createDialog.close();
+      }
+
+      if (openCreateDialogButton instanceof HTMLButtonElement) {
+        openCreateDialogButton.addEventListener("click", openCreateDialog);
+      }
+
+      for (const button of closeCreateDialogButtons) {
+        if (button instanceof HTMLButtonElement) {
+          button.addEventListener("click", closeCreateDialog);
+        }
+      }
+
+      if (${openCreateDialogByDefault ? "true" : "false"}) {
+        openCreateDialog();
+      }
 
       function cards() {
         return Array.from(document.querySelectorAll("[data-todo-id]"));
