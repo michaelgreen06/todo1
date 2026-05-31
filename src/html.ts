@@ -1,4 +1,4 @@
-import type { TodoItem, User } from "./db.js";
+import type { Item, ItemStatusChange, Status, User } from "./db.js";
 
 export type LoginPageOptions = {
   readonly message: string | null;
@@ -7,12 +7,14 @@ export type LoginPageOptions = {
 
 export type TodoPageOptions = {
   readonly user: User;
-  readonly todos: ReadonlyArray<TodoItem>;
+  readonly todos: ReadonlyArray<Item>;
+  readonly statuses: ReadonlyArray<Status>;
   readonly error: string | null;
 };
 
 export type EditPageOptions = {
-  readonly todo: TodoItem;
+  readonly todo: Item;
+  readonly history: ReadonlyArray<ItemStatusChange>;
   readonly error: string | null;
 };
 
@@ -91,6 +93,7 @@ export function renderTodoPage(options: TodoPageOptions): string {
           </form>
         </section>
       </dialog>
+      ${renderStatusDialog(options.statuses)}
     `,
     renderClientScript(options.error !== null),
   );
@@ -115,6 +118,7 @@ export function renderEditPage(options: EditPageOptions): string {
               <a href="/" class="button-link">Cancel</a>
             </div>
           </form>
+          ${renderStatusTimeline(options.history)}
         </section>
       </main>
     `,
@@ -138,7 +142,7 @@ export function renderNotFoundPage(): string {
   );
 }
 
-function renderTodoList(todos: ReadonlyArray<TodoItem>): string {
+function renderTodoList(todos: ReadonlyArray<Item>): string {
   if (todos.length === 0) {
     return `<p class="empty-state">No active items. Add one small thing, like “do not forget goat”.</p>`;
   }
@@ -150,7 +154,7 @@ function renderTodoList(todos: ReadonlyArray<TodoItem>): string {
   `;
 }
 
-function renderTodoCard(todo: TodoItem, index: number, todos: ReadonlyArray<TodoItem>): string {
+function renderTodoCard(todo: Item, index: number, todos: ReadonlyArray<Item>): string {
   const primaryText = todo.title ?? todo.body;
   const bodyHtml = todo.title === null ? "" : `<p class="todo-description">${escapeHtml(todo.body)}</p>`;
   const isFirst = index === 0;
@@ -164,12 +168,7 @@ function renderTodoCard(todo: TodoItem, index: number, todos: ReadonlyArray<Todo
         ${bodyHtml}
         <div class="todo-actions">
           <a href="/todos/${encodeURIComponent(todo.id)}/edit">Edit</a>
-          <form action="/todos/${encodeURIComponent(todo.id)}/complete" method="post">
-            <button type="submit" class="secondary">Complete</button>
-          </form>
-          <form action="/todos/${encodeURIComponent(todo.id)}/archive" method="post">
-            <button type="submit" class="danger">Delete</button>
-          </form>
+          <button type="button" class="secondary" data-open-status-dialog data-item-id="${escapeAttribute(todo.id)}" data-item-label="${escapeAttribute(primaryText)}">Change status</button>
           <form action="/todos/${encodeURIComponent(todo.id)}/move-up" method="post">
             <button type="submit" class="secondary" ${isFirst ? "disabled" : ""}>Move up</button>
           </form>
@@ -178,6 +177,61 @@ function renderTodoCard(todo: TodoItem, index: number, todos: ReadonlyArray<Todo
           </form>
         </div>
       </article>
+    </li>
+  `;
+}
+
+function renderStatusDialog(statuses: ReadonlyArray<Status>): string {
+  return `
+    <dialog class="modal-shell" data-status-dialog aria-labelledby="status-dialog-heading">
+      <section class="panel panel-edit panel-modal">
+        <div class="modal-heading">
+          <div>
+            <p class="eyebrow">Update item</p>
+            <h1 id="status-dialog-heading">Change status</h1>
+          </div>
+          <button type="button" class="icon-button secondary" data-close-status-dialog>Close</button>
+        </div>
+        <p class="muted" data-status-item-label></p>
+        <form method="post" class="stack" data-status-form>
+          <label for="statusId">Status</label>
+          <select id="statusId" name="statusId" required>
+            ${statuses.map((status) => `<option value="${escapeAttribute(status.id)}">${escapeHtml(status.name)}</option>`).join("")}
+          </select>
+          <label for="note">Note <span class="muted">(optional)</span></label>
+          <textarea id="note" name="note" rows="4" maxlength="2000"></textarea>
+          <div class="button-row">
+            <button type="submit">Save status</button>
+            <button type="button" class="secondary" data-close-status-dialog>Cancel</button>
+          </div>
+        </form>
+      </section>
+    </dialog>
+  `;
+}
+
+function renderStatusTimeline(history: ReadonlyArray<ItemStatusChange>): string {
+  return `
+    <section class="status-history" aria-labelledby="status-history-heading">
+      <h2 id="status-history-heading">Status timeline</h2>
+      <ol>
+        ${history.map(renderStatusTimelineEntry).join("")}
+      </ol>
+    </section>
+  `;
+}
+
+function renderStatusTimelineEntry(change: ItemStatusChange): string {
+  const transition = change.fromStatusName === null
+    ? `Created as ${change.toStatusName}`
+    : `${change.fromStatusName} to ${change.toStatusName}`;
+  const note = change.note === null ? "" : `<p>${escapeHtml(change.note)}</p>`;
+
+  return `
+    <li>
+      <p><strong>${escapeHtml(transition)}</strong></p>
+      <time datetime="${escapeAttribute(change.changedAt)}">${escapeHtml(formatTimestamp(change.changedAt))}</time>
+      ${note}
     </li>
   `;
 }
@@ -288,6 +342,7 @@ function renderStyles(): string {
     }
 
     input,
+    select,
     textarea {
       width: 100%;
       border: 1px solid var(--line);
@@ -510,6 +565,26 @@ function renderStyles(): string {
       padding: 0.55rem 0.9rem;
     }
 
+    .status-history {
+      margin-top: 2rem;
+    }
+
+    .status-history ol {
+      display: grid;
+      gap: 0.85rem;
+      padding-left: 1.25rem;
+    }
+
+    .status-history p {
+      margin: 0.2rem 0;
+      white-space: pre-wrap;
+    }
+
+    .status-history time {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
     @media (max-width: 760px) {
       .topbar,
       .list-heading,
@@ -541,6 +616,11 @@ function renderClientScript(openCreateDialogByDefault: boolean): string {
       const createDialog = document.querySelector("[data-create-dialog]");
       const openCreateDialogButton = document.querySelector("[data-open-create-dialog]");
       const closeCreateDialogButtons = Array.from(document.querySelectorAll("[data-close-create-dialog]"));
+      const statusDialog = document.querySelector("[data-status-dialog]");
+      const statusForm = document.querySelector("[data-status-form]");
+      const statusItemLabel = document.querySelector("[data-status-item-label]");
+      const openStatusDialogButtons = Array.from(document.querySelectorAll("[data-open-status-dialog]"));
+      const closeStatusDialogButtons = Array.from(document.querySelectorAll("[data-close-status-dialog]"));
       let draggingCard = null;
       let pointerId = null;
       let longPressTimer = 0;
@@ -575,20 +655,53 @@ function renderClientScript(openCreateDialogByDefault: boolean): string {
         openCreateDialog();
       }
 
+      function closeStatusDialog() {
+        if (statusDialog instanceof HTMLDialogElement && statusDialog.open) {
+          statusDialog.close();
+        }
+      }
+
+      for (const button of openStatusDialogButtons) {
+        button.addEventListener("click", () => {
+          if (!(button instanceof HTMLButtonElement) || !(statusDialog instanceof HTMLDialogElement) || !(statusForm instanceof HTMLFormElement)) {
+            return;
+          }
+
+          statusForm.action = "/todos/" + encodeURIComponent(button.dataset.itemId || "") + "/status";
+
+          if (statusItemLabel) {
+            statusItemLabel.textContent = button.dataset.itemLabel || "";
+          }
+
+          statusDialog.showModal();
+        });
+      }
+
+      for (const button of closeStatusDialogButtons) {
+        button.addEventListener("click", closeStatusDialog);
+      }
+
       function cards() {
         return Array.from(document.querySelectorAll("[data-todo-id]"));
       }
 
-      function persistOrder() {
-        if (!list) {
+      function persistOrder(movedCard) {
+        if (!list || !(movedCard instanceof HTMLElement)) {
           return;
         }
 
-        const ids = cards().map((card) => card.dataset.todoId).filter(Boolean);
+        const orderedCards = cards();
+        const movedIndex = orderedCards.indexOf(movedCard);
+        const previousCard = orderedCards[movedIndex - 1];
+        const nextCard = orderedCards[movedIndex + 1];
         fetch("/todos/reorder", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ids })
+          body: JSON.stringify({
+            movedId: movedCard.dataset.todoId || "",
+            previousId: previousCard ? previousCard.dataset.todoId || null : null,
+            nextId: nextCard ? nextCard.dataset.todoId || null : null
+          })
         }).then((response) => {
           if (!response.ok) {
             window.location.reload();
@@ -654,10 +767,11 @@ function renderClientScript(openCreateDialogByDefault: boolean): string {
             return;
           }
 
+          const movedCard = draggingCard;
           draggingCard.classList.remove("dragging");
           draggingCard = null;
           pointerId = null;
-          persistOrder();
+          persistOrder(movedCard);
         });
 
         list.addEventListener("pointercancel", () => {
@@ -673,4 +787,14 @@ function renderClientScript(openCreateDialogByDefault: boolean): string {
       }
     </script>
   `;
+}
+
+function formatTimestamp(timestamp: string): string {
+  const date = new Date(timestamp);
+
+  if (Number.isNaN(date.getTime())) {
+    return timestamp;
+  }
+
+  return date.toLocaleString();
 }

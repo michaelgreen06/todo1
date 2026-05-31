@@ -13,9 +13,21 @@ export type TodoInput = {
   readonly body: string;
 };
 
+export type StatusChangeInput = {
+  readonly statusId: string;
+  readonly note: string | null;
+};
+
+export type ReorderInput = {
+  readonly movedId: string;
+  readonly previousId: string | null;
+  readonly nextId: string | null;
+};
+
 const MAX_EMAIL_LENGTH = 254;
 const MAX_TITLE_LENGTH = 160;
 const MAX_BODY_LENGTH = 10_000;
+const MAX_STATUS_NOTE_LENGTH = 2_000;
 
 export function validateEmail(rawEmail: string | null): ValidationResult<string> {
   if (rawEmail === null) {
@@ -66,12 +78,41 @@ export function validateTodoInput(
   return { ok: true, value: { title, body } };
 }
 
-export function isStringArray(value: unknown): value is ReadonlyArray<string> {
-  if (!Array.isArray(value)) {
-    return false;
+export function validateStatusChangeInput(
+  rawStatusId: string | null,
+  rawNote: string | null,
+): ValidationResult<StatusChangeInput> {
+  if (rawStatusId === null || rawStatusId.trim().length === 0) {
+    return { ok: false, message: "Choose a status." };
   }
 
-  return value.every((item) => typeof item === "string");
+  const note = normalizeOptionalText(rawNote);
+
+  if (note !== null && note.length > MAX_STATUS_NOTE_LENGTH) {
+    return { ok: false, message: "Status note must be 2,000 characters or fewer." };
+  }
+
+  return { ok: true, value: { statusId: rawStatusId.trim(), note } };
+}
+
+export function validateReorderInput(value: unknown): ValidationResult<ReorderInput> {
+  if (!isRecord(value)) {
+    return { ok: false, message: "Invalid reorder payload." };
+  }
+
+  const movedId = value["movedId"];
+  const previousId = value["previousId"];
+  const nextId = value["nextId"];
+
+  if (
+    typeof movedId !== "string"
+    || !isNullableString(previousId)
+    || !isNullableString(nextId)
+  ) {
+    return { ok: false, message: "Invalid reorder payload." };
+  }
+
+  return { ok: true, value: { movedId, previousId, nextId } };
 }
 
 function normalizeOptionalText(rawText: string | null): string | null {
@@ -81,4 +122,12 @@ function normalizeOptionalText(rawText: string | null): string | null {
 
   const text = rawText.trim();
   return text.length === 0 ? null : text;
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null;
 }

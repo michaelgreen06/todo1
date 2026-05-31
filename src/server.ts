@@ -8,15 +8,15 @@ import {
   revokeSessionToken,
 } from "./auth.js";
 import {
-  ARCHIVED_STATUS,
-  COMPLETED_STATUS,
+  changeItemStatus,
   createTodoItem,
-  findTodoForUser,
+  findItemForUser,
   initializeDatabase,
-  listActiveTodos,
-  moveActiveTodo,
-  reorderActiveTodos,
-  setTodoStatus,
+  listItemStatusChanges,
+  listStatuses,
+  listVisibleTodoItems,
+  moveVisibleTodoItem,
+  reorderVisibleTodoItem,
   updateTodoItem,
 } from "./db.js";
 import {
@@ -25,7 +25,12 @@ import {
   renderNotFoundPage,
   renderTodoPage,
 } from "./html.js";
-import { isStringArray, validateEmail, validateTodoInput } from "./validation.js";
+import {
+  validateEmail,
+  validateReorderInput,
+  validateStatusChangeInput,
+  validateTodoInput,
+} from "./validation.js";
 import type { User } from "./db.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -41,8 +46,6 @@ type RouteParams = {
   readonly id: string;
   readonly action: string;
 };
-
-type JsonRecord = Readonly<Record<string, unknown>>;
 
 export function startServer(): void {
   initializeDatabase();
@@ -140,26 +143,19 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
     return;
   }
 
-  if (method === "POST" && todoRoute.action === "complete") {
-    setTodoStatus(todoRoute.id, authenticatedRequest.user.id, COMPLETED_STATUS);
-    redirect(response, "/");
-    return;
-  }
-
-  if (method === "POST" && todoRoute.action === "archive") {
-    setTodoStatus(todoRoute.id, authenticatedRequest.user.id, ARCHIVED_STATUS);
-    redirect(response, "/");
+  if (method === "POST" && todoRoute.action === "status") {
+    await handleChangeStatus(request, response, authenticatedRequest.user, todoRoute.id);
     return;
   }
 
   if (method === "POST" && todoRoute.action === "move-up") {
-    moveActiveTodo(authenticatedRequest.user.id, todoRoute.id, "up");
+    moveVisibleTodoItem(authenticatedRequest.user.id, todoRoute.id, "up");
     redirect(response, "/");
     return;
   }
 
   if (method === "POST" && todoRoute.action === "move-down") {
-    moveActiveTodo(authenticatedRequest.user.id, todoRoute.id, "down");
+    moveVisibleTodoItem(authenticatedRequest.user.id, todoRoute.id, "down");
     redirect(response, "/");
     return;
   }
@@ -218,14 +214,18 @@ async function handleCreateTodo(
 }
 
 function handleEditPage(response: ServerResponse, user: User, todoId: string): void {
-  const todo = findTodoForUser(todoId, user.id);
+  const todo = findItemForUser(todoId, user.id);
 
   if (todo === null) {
     sendHtml(response, 404, renderNotFoundPage());
     return;
   }
 
-  sendHtml(response, 200, renderEditPage({ todo, error: null }));
+  sendHtml(response, 200, renderEditPage({
+    todo,
+    history: listItemStatusChanges(todo.id, user.id),
+    error: null,
+  }));
 }
 
 async function handleUpdateTodo(
@@ -234,7 +234,7 @@ async function handleUpdateTodo(
   user: User,
   todoId: string,
 ): Promise<void> {
-  const todo = findTodoForUser(todoId, user.id);
+  const todo = findItemForUser(todoId, user.id);
 
   if (todo === null) {
     sendHtml(response, 404, renderNotFoundPage());
@@ -245,11 +245,44 @@ async function handleUpdateTodo(
   const todoResult = validateTodoInput(form.get("title"), form.get("body"));
 
   if (!todoResult.ok) {
-    sendHtml(response, 400, renderEditPage({ todo, error: todoResult.message }));
+    sendHtml(response, 400, renderEditPage({
+      todo,
+      history: listItemStatusChanges(todo.id, user.id),
+      error: todoResult.message,
+    }));
     return;
   }
 
   updateTodoItem(todoId, user.id, todoResult.value.title, todoResult.value.body);
+  redirect(response, "/");
+}
+
+async function handleChangeStatus(
+  request: IncomingMessage,
+  response: ServerResponse,
+  user: User,
+  todoId: string,
+): Promise<void> {
+  const form = new URLSearchParams(await readRequestBody(request));
+  const statusResult = validateStatusChangeInput(form.get("statusId"), form.get("note"));
+
+  if (!statusResult.ok) {
+    sendTodoPage(response, user, statusResult.message);
+    return;
+  }
+
+  const didChange = changeItemStatus(
+    todoId,
+    user.id,
+    statusResult.value.statusId,
+    statusResult.value.note,
+  );
+
+  if (!didChange) {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
   redirect(response, "/");
 }
 
@@ -259,14 +292,14 @@ async function handleReorderTodos(
   user: User,
 ): Promise<void> {
   const parsedBody = parseJson(await readRequestBody(request));
-  const orderedIds = isRecord(parsedBody) ? parsedBody["ids"] : null;
+  const reorderResult = validateReorderInput(parsedBody);
 
-  if (!isStringArray(orderedIds)) {
+  if (!reorderResult.ok) {
     sendJson(response, 400, '{"ok":false}');
     return;
   }
 
-  const wasReordered = reorderActiveTodos(user.id, orderedIds);
+  const wasReordered = reorderVisibleTodoItem(user.id, reorderResult.value);
 
   if (!wasReordered) {
     sendJson(response, 400, '{"ok":false}');
@@ -280,7 +313,12 @@ function sendTodoPage(response: ServerResponse, user: User, error: string | null
   sendHtml(
     response,
     error === null ? 200 : 400,
-    renderTodoPage({ user, todos: listActiveTodos(user.id), error }),
+    renderTodoPage({
+      user,
+      todos: listVisibleTodoItems(user.id),
+      statuses: listStatuses(user.id),
+      error,
+    }),
   );
 }
 
@@ -413,8 +451,4 @@ function parseJson(rawBody: string): unknown {
   } catch {
     return null;
   }
-}
-
-function isRecord(value: unknown): value is JsonRecord {
-  return typeof value === "object" && value !== null;
 }

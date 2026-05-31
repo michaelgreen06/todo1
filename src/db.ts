@@ -1,13 +1,14 @@
 import { execFileSync } from "node:child_process";
+import { generateKeyBetween } from "fractional-indexing";
 
-export const ACTIVE_STATUS = "active";
-export const COMPLETED_STATUS = "completed";
-export const ARCHIVED_STATUS = "archived";
+export const STATUS_CATEGORIES = {
+  active: "active",
+  deferred: "deferred",
+  completed: "completed",
+  archived: "archived",
+} as const;
 
-export type TodoStatus =
-  | typeof ACTIVE_STATUS
-  | typeof COMPLETED_STATUS
-  | typeof ARCHIVED_STATUS;
+export type StatusCategory = (typeof STATUS_CATEGORIES)[keyof typeof STATUS_CATEGORIES];
 
 export type User = {
   readonly id: string;
@@ -33,26 +34,69 @@ export type Session = {
   readonly revokedAt: string | null;
 };
 
-export type TodoItem = {
+export type Status = {
   readonly id: string;
   readonly userId: string;
-  readonly title: string | null;
-  readonly body: string;
-  readonly status: TodoStatus;
-  readonly sortOrder: number;
+  readonly name: string;
+  readonly category: StatusCategory;
+  readonly showInTodoView: boolean;
+  readonly isDefaultForNewItems: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
+};
+
+export type Item = {
+  readonly id: string;
+  readonly userId: string;
+  readonly nodeId: string | null;
+  readonly statusId: string;
+  readonly statusName: string;
+  readonly statusCategory: StatusCategory;
+  readonly kind: string;
+  readonly title: string | null;
+  readonly body: string;
+  readonly statusChangedAt: string;
+  readonly todoRank: string | null;
+  readonly todoRankChangedAt: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+};
+
+export type ItemStatusChange = {
+  readonly id: string;
+  readonly itemId: string;
+  readonly fromStatusName: string | null;
+  readonly toStatusName: string;
+  readonly note: string | null;
+  readonly changedAt: string;
+};
+
+export type ReorderItemInput = {
+  readonly movedId: string;
+  readonly previousId: string | null;
+  readonly nextId: string | null;
 };
 
 type UnknownRecord = Readonly<Record<string, unknown>>;
 
 const SQLITE_BIN = "/usr/bin/sqlite3";
 const DATABASE_PATH = "todo.sqlite";
+const ITEM_KIND = "todo";
+
+const SEEDED_STATUSES = [
+  { name: "Active", category: STATUS_CATEGORIES.active, showInTodoView: true, isDefaultForNewItems: true },
+  { name: "Deferred", category: STATUS_CATEGORIES.deferred, showInTodoView: false, isDefaultForNewItems: false },
+  { name: "Completed", category: STATUS_CATEGORIES.completed, showInTodoView: false, isDefaultForNewItems: false },
+  { name: "Archived", category: STATUS_CATEGORIES.archived, showInTodoView: false, isDefaultForNewItems: false },
+] satisfies ReadonlyArray<{
+  readonly name: string;
+  readonly category: StatusCategory;
+  readonly showInTodoView: boolean;
+  readonly isDefaultForNewItems: boolean;
+}>;
 
 export function initializeDatabase(): void {
   executeSql(`
-    PRAGMA foreign_keys = ON;
-
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       email TEXT NOT NULL UNIQUE,
@@ -77,21 +121,64 @@ export function initializeDatabase(): void {
       revoked_at TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS todo_items (
+    CREATE TABLE IF NOT EXISTS nodes (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      title TEXT,
-      body TEXT NOT NULL,
-      status TEXT NOT NULL CHECK (status IN ('active', 'completed', 'archived')),
-      sort_order INTEGER NOT NULL,
+      parent_id TEXT REFERENCES nodes(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS statuses (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL CHECK (category IN ('active', 'deferred', 'completed', 'archived')),
+      show_in_todo_view INTEGER NOT NULL CHECK (show_in_todo_view IN (0, 1)),
+      is_default_for_new_items INTEGER NOT NULL CHECK (is_default_for_new_items IN (0, 1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (user_id, name)
+    );
+
+    CREATE TABLE IF NOT EXISTS items (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      node_id TEXT REFERENCES nodes(id) ON DELETE RESTRICT,
+      status_id TEXT NOT NULL REFERENCES statuses(id) ON DELETE RESTRICT,
+      kind TEXT NOT NULL,
+      title TEXT,
+      body TEXT NOT NULL,
+      status_changed_at TEXT NOT NULL,
+      todo_rank TEXT,
+      todo_rank_changed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS item_status_changes (
+      id TEXT PRIMARY KEY,
+      item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      from_status_id TEXT REFERENCES statuses(id) ON DELETE RESTRICT,
+      to_status_id TEXT NOT NULL REFERENCES statuses(id) ON DELETE RESTRICT,
+      note TEXT,
+      changed_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_login_tokens_hash ON login_tokens(token_hash);
     CREATE INDEX IF NOT EXISTS idx_sessions_hash ON sessions(session_hash);
-    CREATE INDEX IF NOT EXISTS idx_todo_items_user_status_order
-      ON todo_items(user_id, status, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_nodes_user_parent ON nodes(user_id, parent_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_sibling_name
+      ON nodes(user_id, parent_id, name) WHERE parent_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_root_name
+      ON nodes(user_id, name) WHERE parent_id IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_statuses_user_lookup ON statuses(user_id, id);
+    CREATE INDEX IF NOT EXISTS idx_items_visible_todo_rank
+      ON items(user_id, status_id, todo_rank) WHERE todo_rank IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_item_status_changes_history
+      ON item_status_changes(item_id, changed_at DESC);
   `);
 }
 
@@ -107,33 +194,38 @@ export function findOrCreateUserByEmail(email: string): User {
     email,
     createdAt: nowIso(),
   };
+  const statusInserts = SEEDED_STATUSES.map((status) => {
+    return `INSERT INTO statuses (
+      id, user_id, name, category, show_in_todo_view, is_default_for_new_items, created_at, updated_at
+    ) VALUES (
+      ${sql(globalThis.crypto.randomUUID())}, ${sql(user.id)}, ${sql(status.name)}, ${sql(status.category)},
+      ${sql(status.showInTodoView)}, ${sql(status.isDefaultForNewItems)}, ${sql(user.createdAt)}, ${sql(user.createdAt)}
+    );`;
+  }).join("\n");
 
-  executeSql(
-    `INSERT INTO users (id, email, created_at)
-     VALUES (${sql(user.id)}, ${sql(user.email)}, ${sql(user.createdAt)});`,
-  );
+  executeSql(`
+    BEGIN IMMEDIATE;
+    INSERT INTO users (id, email, created_at)
+    VALUES (${sql(user.id)}, ${sql(user.email)}, ${sql(user.createdAt)});
+    ${statusInserts}
+    COMMIT;
+  `);
 
   return user;
 }
 
 export function findUserById(userId: string): User | null {
-  const row = firstRow(
-    queryRows(
-      `SELECT id, email, created_at
-       FROM users
-       WHERE id = ${sql(userId)}
-       LIMIT 1;`,
-    ),
-  );
+  const row = firstRow(queryRows(`
+    SELECT id, email, created_at
+    FROM users
+    WHERE id = ${sql(userId)}
+    LIMIT 1;
+  `));
 
   return row === null ? null : mapUser(row);
 }
 
-export function createLoginToken(
-  userId: string,
-  tokenHash: string,
-  expiresAt: string,
-): LoginToken {
+export function createLoginToken(userId: string, tokenHash: string, expiresAt: string): LoginToken {
   const token: LoginToken = {
     id: globalThis.crypto.randomUUID(),
     userId,
@@ -143,80 +235,33 @@ export function createLoginToken(
     createdAt: nowIso(),
   };
 
-  executeSql(
-    `INSERT INTO login_tokens (id, user_id, token_hash, expires_at, used_at, created_at)
-     VALUES (${sql(token.id)}, ${sql(token.userId)}, ${sql(token.tokenHash)}, ${sql(token.expiresAt)}, NULL, ${sql(token.createdAt)});`,
-  );
+  executeSql(`
+    INSERT INTO login_tokens (id, user_id, token_hash, expires_at, used_at, created_at)
+    VALUES (${sql(token.id)}, ${sql(token.userId)}, ${sql(token.tokenHash)}, ${sql(token.expiresAt)}, NULL, ${sql(token.createdAt)});
+  `);
 
   return token;
 }
 
-export function findUsableLoginToken(tokenHash: string, currentTime: string): LoginToken | null {
-  const row = firstRow(
-    queryRows(
-      `SELECT id, user_id, token_hash, expires_at, used_at, created_at
-       FROM login_tokens
-       WHERE token_hash = ${sql(tokenHash)}
-         AND used_at IS NULL
-         AND expires_at > ${sql(currentTime)}
-       LIMIT 1;`,
-    ),
-  );
-
-  return row === null ? null : mapLoginToken(row);
-}
-
-export function markLoginTokenUsed(tokenId: string): void {
-  executeSql(
-    `UPDATE login_tokens
-     SET used_at = ${sql(nowIso())}
-     WHERE id = ${sql(tokenId)} AND used_at IS NULL;`,
-  );
-}
-
-export function createSession(
-  userId: string,
-  sessionHash: string,
-  expiresAt: string,
-): Session {
-  const session: Session = {
-    id: globalThis.crypto.randomUUID(),
-    userId,
-    sessionHash,
-    expiresAt,
-    createdAt: nowIso(),
-    revokedAt: null,
-  };
-
-  executeSql(
-    `INSERT INTO sessions (id, user_id, session_hash, expires_at, created_at, revoked_at)
-     VALUES (${sql(session.id)}, ${sql(session.userId)}, ${sql(session.sessionHash)}, ${sql(session.expiresAt)}, ${sql(session.createdAt)}, NULL);`,
-  );
-
-  return session;
-}
-
 export function findActiveSession(sessionHash: string, currentTime: string): Session | null {
-  const row = firstRow(
-    queryRows(
-      `SELECT id, user_id, session_hash, expires_at, created_at, revoked_at
-       FROM sessions
-       WHERE session_hash = ${sql(sessionHash)}
-         AND revoked_at IS NULL
-         AND expires_at > ${sql(currentTime)}
-       LIMIT 1;`,
-    ),
-  );
+  const row = firstRow(queryRows(`
+    SELECT id, user_id, session_hash, expires_at, created_at, revoked_at
+    FROM sessions
+    WHERE session_hash = ${sql(sessionHash)}
+      AND revoked_at IS NULL
+      AND expires_at > ${sql(currentTime)}
+    LIMIT 1;
+  `));
 
   return row === null ? null : mapSession(row);
 }
 
 export function revokeSession(sessionHash: string): void {
-  executeSql(
-    `UPDATE sessions
-     SET revoked_at = ${sql(nowIso())}
-     WHERE session_hash = ${sql(sessionHash)} AND revoked_at IS NULL;`,
-  );
+  executeSql(`
+    UPDATE sessions
+    SET revoked_at = ${sql(nowIso())}
+    WHERE session_hash = ${sql(sessionHash)} AND revoked_at IS NULL;
+  `);
 }
 
 export function consumeLoginTokenAndCreateSession(
@@ -226,186 +271,260 @@ export function consumeLoginTokenAndCreateSession(
   currentTime: string,
 ): Session | null {
   const sessionId = globalThis.crypto.randomUUID();
-  executeSql(
-    `BEGIN IMMEDIATE;
-     UPDATE login_tokens
-     SET used_at = ${sql(currentTime)}
-     WHERE token_hash = ${sql(tokenHash)}
-       AND used_at IS NULL
-       AND expires_at > ${sql(currentTime)};
-     INSERT INTO sessions (id, user_id, session_hash, expires_at, created_at, revoked_at)
-     SELECT ${sql(sessionId)}, user_id, ${sql(sessionHash)}, ${sql(sessionExpiresAt)}, ${sql(currentTime)}, NULL
-     FROM login_tokens
-     WHERE token_hash = ${sql(tokenHash)}
-       AND used_at = ${sql(currentTime)}
-       AND expires_at > ${sql(currentTime)};
-     COMMIT;`,
-  );
+  executeSql(`
+    BEGIN IMMEDIATE;
+    UPDATE login_tokens
+    SET used_at = ${sql(currentTime)}
+    WHERE token_hash = ${sql(tokenHash)}
+      AND used_at IS NULL
+      AND expires_at > ${sql(currentTime)};
+    INSERT INTO sessions (id, user_id, session_hash, expires_at, created_at, revoked_at)
+    SELECT ${sql(sessionId)}, user_id, ${sql(sessionHash)}, ${sql(sessionExpiresAt)}, ${sql(currentTime)}, NULL
+    FROM login_tokens
+    WHERE token_hash = ${sql(tokenHash)}
+      AND used_at = ${sql(currentTime)}
+      AND expires_at > ${sql(currentTime)};
+    COMMIT;
+  `);
 
   return findActiveSession(sessionHash, currentTime);
 }
 
-export function listActiveTodos(userId: string): Array<TodoItem> {
-  return queryRows(
-    `SELECT id, user_id, title, body, status, sort_order, created_at, updated_at
-     FROM todo_items
-     WHERE user_id = ${sql(userId)} AND status = ${sql(ACTIVE_STATUS)}
-     ORDER BY sort_order ASC, created_at ASC;`,
-  ).map(mapTodoItem);
+export function listStatuses(userId: string): Array<Status> {
+  return queryRows(`
+    SELECT id, user_id, name, category, show_in_todo_view, is_default_for_new_items, created_at, updated_at
+    FROM statuses
+    WHERE user_id = ${sql(userId)}
+    ORDER BY name ASC;
+  `).map(mapStatus);
 }
 
-export function findTodoForUser(todoId: string, userId: string): TodoItem | null {
-  const row = firstRow(
-    queryRows(
-      `SELECT id, user_id, title, body, status, sort_order, created_at, updated_at
-       FROM todo_items
-       WHERE id = ${sql(todoId)} AND user_id = ${sql(userId)}
-       LIMIT 1;`,
-    ),
-  );
-
-  return row === null ? null : mapTodoItem(row);
+export function listVisibleTodoItems(userId: string): Array<Item> {
+  return queryRows(`
+    ${itemSelect()}
+    WHERE items.user_id = ${sql(userId)}
+      AND statuses.show_in_todo_view = 1
+      AND items.todo_rank IS NOT NULL
+    ORDER BY items.todo_rank ASC, items.created_at ASC;
+  `).map(mapItem);
 }
 
-export function createTodoItem(
-  userId: string,
-  title: string | null,
-  body: string,
-): TodoItem {
+export function findItemForUser(itemId: string, userId: string): Item | null {
+  const row = firstRow(queryRows(`
+    ${itemSelect()}
+    WHERE items.id = ${sql(itemId)} AND items.user_id = ${sql(userId)}
+    LIMIT 1;
+  `));
+
+  return row === null ? null : mapItem(row);
+}
+
+export function listItemStatusChanges(itemId: string, userId: string): Array<ItemStatusChange> {
+  return queryRows(`
+    SELECT item_status_changes.id, item_status_changes.item_id,
+      from_status.name AS from_status_name, to_status.name AS to_status_name,
+      item_status_changes.note, item_status_changes.changed_at
+    FROM item_status_changes
+    JOIN items ON items.id = item_status_changes.item_id
+    LEFT JOIN statuses AS from_status ON from_status.id = item_status_changes.from_status_id
+    JOIN statuses AS to_status ON to_status.id = item_status_changes.to_status_id
+    WHERE item_status_changes.item_id = ${sql(itemId)} AND items.user_id = ${sql(userId)}
+    ORDER BY item_status_changes.changed_at DESC, item_status_changes.id DESC;
+  `).map(mapItemStatusChange);
+}
+
+export function createTodoItem(userId: string, title: string | null, body: string): Item {
+  const defaultStatus = findDefaultStatus(userId);
+
+  if (defaultStatus === null) {
+    throw new Error("User does not have a default status.");
+  }
+
   const timestamp = nowIso();
-  const item: TodoItem = {
-    id: globalThis.crypto.randomUUID(),
-    userId,
-    title,
-    body,
-    status: ACTIVE_STATUS,
-    sortOrder: getNextSortOrder(userId),
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
+  const itemId = globalThis.crypto.randomUUID();
+  const todoRank = generateTopTodoRank(userId);
+  executeSql(`
+    BEGIN IMMEDIATE;
+    INSERT INTO items (
+      id, user_id, node_id, status_id, kind, title, body, status_changed_at,
+      todo_rank, todo_rank_changed_at, created_at, updated_at
+    ) VALUES (
+      ${sql(itemId)}, ${sql(userId)}, NULL, ${sql(defaultStatus.id)}, ${sql(ITEM_KIND)}, ${sql(title)}, ${sql(body)},
+      ${sql(timestamp)}, ${sql(todoRank)}, NULL, ${sql(timestamp)}, ${sql(timestamp)}
+    );
+    INSERT INTO item_status_changes (id, item_id, from_status_id, to_status_id, note, changed_at)
+    VALUES (${sql(globalThis.crypto.randomUUID())}, ${sql(itemId)}, NULL, ${sql(defaultStatus.id)}, NULL, ${sql(timestamp)});
+    COMMIT;
+  `);
 
-  executeSql(
-    `INSERT INTO todo_items (id, user_id, title, body, status, sort_order, created_at, updated_at)
-     VALUES (${sql(item.id)}, ${sql(item.userId)}, ${sql(item.title)}, ${sql(item.body)}, ${sql(item.status)}, ${item.sortOrder.toString()}, ${sql(item.createdAt)}, ${sql(item.updatedAt)});`,
-  );
+  const item = findItemForUser(itemId, userId);
+
+  if (item === null) {
+    throw new Error("Newly created item could not be found.");
+  }
 
   return item;
 }
 
-export function updateTodoItem(
-  todoId: string,
-  userId: string,
-  title: string | null,
-  body: string,
-): void {
-  executeSql(
-    `UPDATE todo_items
-     SET title = ${sql(title)}, body = ${sql(body)}, updated_at = ${sql(nowIso())}
-     WHERE id = ${sql(todoId)} AND user_id = ${sql(userId)};`,
-  );
+export function updateTodoItem(itemId: string, userId: string, title: string | null, body: string): boolean {
+  executeSql(`
+    UPDATE items
+    SET title = ${sql(title)}, body = ${sql(body)}, updated_at = ${sql(nowIso())}
+    WHERE id = ${sql(itemId)} AND user_id = ${sql(userId)};
+  `);
+
+  return findItemForUser(itemId, userId) !== null;
 }
 
-export function setTodoStatus(todoId: string, userId: string, status: TodoStatus): void {
-  executeSql(
-    `UPDATE todo_items
-     SET status = ${sql(status)}, updated_at = ${sql(nowIso())}
-     WHERE id = ${sql(todoId)} AND user_id = ${sql(userId)};`,
-  );
+export function changeItemStatus(itemId: string, userId: string, statusId: string, note: string | null): boolean {
+  const item = findItemForUser(itemId, userId);
+  const status = findStatusForUser(statusId, userId);
+
+  if (item === null || status === null || item.statusId === status.id) {
+    return false;
+  }
+
+  const timestamp = nowIso();
+  const todoRank = status.showInTodoView ? generateTopTodoRank(userId) : null;
+  executeSql(`
+    BEGIN IMMEDIATE;
+    UPDATE items
+    SET status_id = ${sql(status.id)}, status_changed_at = ${sql(timestamp)}, todo_rank = ${sql(todoRank)}, updated_at = ${sql(timestamp)}
+    WHERE id = ${sql(item.id)} AND user_id = ${sql(userId)};
+    INSERT INTO item_status_changes (id, item_id, from_status_id, to_status_id, note, changed_at)
+    VALUES (${sql(globalThis.crypto.randomUUID())}, ${sql(item.id)}, ${sql(item.statusId)}, ${sql(status.id)}, ${sql(note)}, ${sql(timestamp)});
+    COMMIT;
+  `);
+
+  return true;
 }
 
-export function moveActiveTodo(userId: string, todoId: string, direction: "up" | "down"): void {
-  const reorderedTodos = [...listActiveTodos(userId)];
-  const currentIndex = reorderedTodos.findIndex((todo) => todo.id === todoId);
+export function moveVisibleTodoItem(userId: string, itemId: string, direction: "up" | "down"): boolean {
+  const items = listVisibleTodoItems(userId);
+  const currentIndex = items.findIndex((item) => item.id === itemId);
 
   if (currentIndex === -1) {
-    return;
+    return false;
   }
 
   const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
 
-  if (targetIndex < 0 || targetIndex >= reorderedTodos.length) {
-    return;
+  if (targetIndex < 0 || targetIndex >= items.length) {
+    return false;
   }
 
-  const currentTodo = reorderedTodos[currentIndex];
-  const targetTodo = reorderedTodos[targetIndex];
-
-  if (currentTodo === undefined || targetTodo === undefined) {
-    return;
-  }
-
-  reorderedTodos[currentIndex] = targetTodo;
-  reorderedTodos[targetIndex] = currentTodo;
-  renumberActiveTodos(userId, reorderedTodos.map((todo) => todo.id));
+  const withoutMoved = items.filter((item) => item.id !== itemId);
+  const insertionIndex = direction === "up" ? targetIndex : targetIndex;
+  return reorderVisibleTodoItem(userId, {
+    movedId: itemId,
+    previousId: withoutMoved[insertionIndex - 1]?.id ?? null,
+    nextId: withoutMoved[insertionIndex]?.id ?? null,
+  });
 }
 
-export function reorderActiveTodos(userId: string, orderedIds: ReadonlyArray<string>): boolean {
-  const activeTodos = listActiveTodos(userId);
+export function reorderVisibleTodoItem(userId: string, input: ReorderItemInput): boolean {
+  const items = listVisibleTodoItems(userId);
+  const movedItem = items.find((item) => item.id === input.movedId);
 
-  if (activeTodos.length !== orderedIds.length) {
+  if (movedItem === undefined || input.previousId === input.movedId || input.nextId === input.movedId) {
     return false;
   }
 
-  const activeIds = new Set(activeTodos.map((todo) => todo.id));
-  const orderedIdSet = new Set(orderedIds);
+  const withoutMoved = items.filter((item) => item.id !== input.movedId);
+  const expectedNeighbors = findInsertionNeighbors(withoutMoved, input.previousId, input.nextId);
 
-  if (activeIds.size !== orderedIdSet.size) {
+  if (expectedNeighbors === null) {
     return false;
   }
 
-  if (orderedIds.some((id) => !activeIds.has(id))) {
-    return false;
-  }
+  const timestamp = nowIso();
+  const todoRank = generateKeyBetween(expectedNeighbors.previousRank, expectedNeighbors.nextRank);
+  executeSql(`
+    UPDATE items
+    SET todo_rank = ${sql(todoRank)}, todo_rank_changed_at = ${sql(timestamp)}, updated_at = ${sql(timestamp)}
+    WHERE id = ${sql(movedItem.id)} AND user_id = ${sql(userId)};
+  `);
 
-  renumberActiveTodos(userId, orderedIds);
   return true;
 }
 
 function findUserByEmail(email: string): User | null {
-  const row = firstRow(
-    queryRows(
-      `SELECT id, email, created_at
-       FROM users
-       WHERE email = ${sql(email)}
-       LIMIT 1;`,
-    ),
-  );
+  const row = firstRow(queryRows(`
+    SELECT id, email, created_at
+    FROM users
+    WHERE email = ${sql(email)}
+    LIMIT 1;
+  `));
 
   return row === null ? null : mapUser(row);
 }
 
-function getNextSortOrder(userId: string): number {
-  const row = firstRow(
-    queryRows(
-      `SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_sort_order
-       FROM todo_items
-       WHERE user_id = ${sql(userId)} AND status = ${sql(ACTIVE_STATUS)};`,
-    ),
-  );
+function findDefaultStatus(userId: string): Status | null {
+  const row = firstRow(queryRows(`
+    SELECT id, user_id, name, category, show_in_todo_view, is_default_for_new_items, created_at, updated_at
+    FROM statuses
+    WHERE user_id = ${sql(userId)} AND is_default_for_new_items = 1
+    LIMIT 1;
+  `));
 
-  return row === null ? 1 : getRequiredNumber(row, "next_sort_order");
+  return row === null ? null : mapStatus(row);
 }
 
-function renumberActiveTodos(userId: string, orderedIds: ReadonlyArray<string>): void {
-  const timestamp = nowIso();
-  const updates = orderedIds
-    .map(
-      (todoId, index) =>
-        `UPDATE todo_items
-         SET sort_order = ${(index + 1).toString()}, updated_at = ${sql(timestamp)}
-         WHERE id = ${sql(todoId)} AND user_id = ${sql(userId)} AND status = ${sql(ACTIVE_STATUS)};`,
-    )
-    .join("\n");
+function findStatusForUser(statusId: string, userId: string): Status | null {
+  const row = firstRow(queryRows(`
+    SELECT id, user_id, name, category, show_in_todo_view, is_default_for_new_items, created_at, updated_at
+    FROM statuses
+    WHERE id = ${sql(statusId)} AND user_id = ${sql(userId)}
+    LIMIT 1;
+  `));
 
-  executeSql(`BEGIN TRANSACTION;\n${updates}\nCOMMIT;`);
+  return row === null ? null : mapStatus(row);
+}
+
+function generateTopTodoRank(userId: string): string {
+  const firstItem = listVisibleTodoItems(userId)[0];
+  return generateKeyBetween(null, firstItem?.todoRank ?? null);
+}
+
+function findInsertionNeighbors(
+  items: ReadonlyArray<Item>,
+  previousId: string | null,
+  nextId: string | null,
+): { readonly previousRank: string | null; readonly nextRank: string | null } | null {
+  const insertionIndex = previousId === null ? 0 : items.findIndex((item) => item.id === previousId) + 1;
+
+  if (insertionIndex < 0) {
+    return null;
+  }
+
+  const previousItem = items[insertionIndex - 1];
+  const nextItem = items[insertionIndex];
+
+  if ((previousItem?.id ?? null) !== previousId || (nextItem?.id ?? null) !== nextId) {
+    return null;
+  }
+
+  return {
+    previousRank: previousItem?.todoRank ?? null,
+    nextRank: nextItem?.todoRank ?? null,
+  };
+}
+
+function itemSelect(): string {
+  return `SELECT items.id, items.user_id, items.node_id, items.status_id,
+    statuses.name AS status_name, statuses.category AS status_category,
+    items.kind, items.title, items.body, items.status_changed_at,
+    items.todo_rank, items.todo_rank_changed_at, items.created_at, items.updated_at
+    FROM items
+    JOIN statuses ON statuses.id = items.status_id`;
 }
 
 function executeSql(statement: string): void {
-  execFileSync(SQLITE_BIN, [DATABASE_PATH, statement], { encoding: "utf8" });
+  execFileSync(SQLITE_BIN, [DATABASE_PATH, `PRAGMA foreign_keys = ON;\n${statement}`], { encoding: "utf8" });
 }
 
 function queryRows(statement: string): Array<UnknownRecord> {
-  const output = execFileSync(SQLITE_BIN, ["-json", DATABASE_PATH, statement], {
+  const output = execFileSync(SQLITE_BIN, ["-json", DATABASE_PATH, `PRAGMA foreign_keys = ON;\n${statement}`], {
     encoding: "utf8",
   });
   const trimmedOutput = output.trim();
@@ -424,13 +543,16 @@ function queryRows(statement: string): Array<UnknownRecord> {
 }
 
 function firstRow(rows: ReadonlyArray<UnknownRecord>): UnknownRecord | null {
-  const row = rows[0];
-  return row ?? null;
+  return rows[0] ?? null;
 }
 
-function sql(value: string | number | null): string {
+function sql(value: string | number | boolean | null): string {
   if (value === null) {
     return "NULL";
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "1" : "0";
   }
 
   if (typeof value === "number") {
@@ -452,17 +574,6 @@ function mapUser(row: UnknownRecord): User {
   };
 }
 
-function mapLoginToken(row: UnknownRecord): LoginToken {
-  return {
-    id: getRequiredString(row, "id"),
-    userId: getRequiredString(row, "user_id"),
-    tokenHash: getRequiredString(row, "token_hash"),
-    expiresAt: getRequiredString(row, "expires_at"),
-    usedAt: getOptionalString(row, "used_at"),
-    createdAt: getRequiredString(row, "created_at"),
-  };
-}
-
 function mapSession(row: UnknownRecord): Session {
   return {
     id: getRequiredString(row, "id"),
@@ -474,27 +585,63 @@ function mapSession(row: UnknownRecord): Session {
   };
 }
 
-function mapTodoItem(row: UnknownRecord): TodoItem {
-  const status = getRequiredString(row, "status");
+function mapStatus(row: UnknownRecord): Status {
+  const category = getRequiredString(row, "category");
 
-  if (!isTodoStatus(status)) {
-    throw new Error("SQLite returned an invalid todo status.");
+  if (!isStatusCategory(category)) {
+    throw new Error("SQLite returned an invalid status category.");
   }
 
   return {
     id: getRequiredString(row, "id"),
     userId: getRequiredString(row, "user_id"),
-    title: getOptionalString(row, "title"),
-    body: getRequiredString(row, "body"),
-    status,
-    sortOrder: getRequiredNumber(row, "sort_order"),
+    name: getRequiredString(row, "name"),
+    category,
+    showInTodoView: getRequiredBoolean(row, "show_in_todo_view"),
+    isDefaultForNewItems: getRequiredBoolean(row, "is_default_for_new_items"),
     createdAt: getRequiredString(row, "created_at"),
     updatedAt: getRequiredString(row, "updated_at"),
   };
 }
 
-function isTodoStatus(value: string): value is TodoStatus {
-  return value === ACTIVE_STATUS || value === COMPLETED_STATUS || value === ARCHIVED_STATUS;
+function mapItem(row: UnknownRecord): Item {
+  const statusCategory = getRequiredString(row, "status_category");
+
+  if (!isStatusCategory(statusCategory)) {
+    throw new Error("SQLite returned an invalid status category.");
+  }
+
+  return {
+    id: getRequiredString(row, "id"),
+    userId: getRequiredString(row, "user_id"),
+    nodeId: getOptionalString(row, "node_id"),
+    statusId: getRequiredString(row, "status_id"),
+    statusName: getRequiredString(row, "status_name"),
+    statusCategory,
+    kind: getRequiredString(row, "kind"),
+    title: getOptionalString(row, "title"),
+    body: getRequiredString(row, "body"),
+    statusChangedAt: getRequiredString(row, "status_changed_at"),
+    todoRank: getOptionalString(row, "todo_rank"),
+    todoRankChangedAt: getOptionalString(row, "todo_rank_changed_at"),
+    createdAt: getRequiredString(row, "created_at"),
+    updatedAt: getRequiredString(row, "updated_at"),
+  };
+}
+
+function mapItemStatusChange(row: UnknownRecord): ItemStatusChange {
+  return {
+    id: getRequiredString(row, "id"),
+    itemId: getRequiredString(row, "item_id"),
+    fromStatusName: getOptionalString(row, "from_status_name"),
+    toStatusName: getRequiredString(row, "to_status_name"),
+    note: getOptionalString(row, "note"),
+    changedAt: getRequiredString(row, "changed_at"),
+  };
+}
+
+function isStatusCategory(value: string): value is StatusCategory {
+  return Object.values(STATUS_CATEGORIES).some((category) => category === value);
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -525,12 +672,12 @@ function getOptionalString(row: UnknownRecord, key: string): string | null {
   return value;
 }
 
-function getRequiredNumber(row: UnknownRecord, key: string): number {
+function getRequiredBoolean(row: UnknownRecord, key: string): boolean {
   const value = row[key];
 
-  if (typeof value !== "number") {
-    throw new Error(`Expected ${key} to be a number.`);
+  if (value !== 0 && value !== 1) {
+    throw new Error(`Expected ${key} to be a SQLite boolean.`);
   }
 
-  return value;
+  return value === 1;
 }
