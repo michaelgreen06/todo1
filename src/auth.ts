@@ -1,4 +1,3 @@
-import { createHash, randomBytes } from "node:crypto";
 import {
   consumeLoginTokenAndCreateSession,
   createLoginToken,
@@ -7,6 +6,7 @@ import {
   findUserById,
   revokeSession,
 } from "./db.js";
+import { createRawToken, hashRawToken } from "./token.js";
 import type { User } from "./db.js";
 
 const MAGIC_LINK_TTL_MS = 30 * 60 * 1000;
@@ -27,8 +27,8 @@ export function createMagicLoginLink(
   baseUrl: string,
 ): Promise<MagicLinkResult> {
   const user = findOrCreateUserByEmail(email);
-  const rawToken = createRandomToken();
-  const tokenHash = hashToken(rawToken);
+  const rawToken = createRawToken();
+  const tokenHash = hashRawToken(rawToken);
   const expiresAt = futureIso(MAGIC_LINK_TTL_MS);
 
   createLoginToken(user.id, tokenHash, expiresAt);
@@ -44,12 +44,12 @@ export function consumeMagicToken(
     return Promise.resolve(null);
   }
 
-  const tokenHash = hashToken(rawToken.trim());
+  const tokenHash = hashRawToken(rawToken.trim());
   const currentTime = new Date().toISOString();
-  const sessionToken = createRandomToken();
+  const sessionToken = createRawToken();
   const session = consumeLoginTokenAndCreateSession(
     tokenHash,
-    hashToken(sessionToken),
+    hashRawToken(sessionToken),
     futureIso(SESSION_TTL_MS),
     currentTime,
   );
@@ -77,7 +77,7 @@ export function getUserForSessionToken(
     return Promise.resolve(null);
   }
 
-  const sessionHash = hashToken(rawSessionToken.trim());
+  const sessionHash = hashRawToken(rawSessionToken.trim());
   const session = findActiveSession(sessionHash, new Date().toISOString());
 
   if (session === null) {
@@ -92,20 +92,12 @@ export function revokeSessionToken(rawSessionToken: string | null): Promise<void
     return Promise.resolve();
   }
 
-  revokeSession(hashToken(rawSessionToken.trim()));
+  revokeSession(hashRawToken(rawSessionToken.trim()));
   return Promise.resolve();
 }
 
 export function getSessionMaxAgeSeconds(): number {
   return Math.floor(SESSION_TTL_MS / 1000);
-}
-
-function createRandomToken(): string {
-  return randomBytes(32).toString("hex");
-}
-
-function hashToken(rawToken: string): string {
-  return createHash("sha256").update(rawToken, "utf8").digest("hex");
 }
 
 function futureIso(durationMs: number): string {

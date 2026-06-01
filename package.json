@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "check": "npm run typecheck && npm run lint && npm run build"
+    "check": "npm run typecheck && npm run lint && npm run build",
+    "create-device-token": "tsc -p tsconfig.build.json && node dist/create-device-token.js",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

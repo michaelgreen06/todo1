@@ -24,10 +24,20 @@ export type ReorderInput = {
   readonly nextId: string | null;
 };
 
+export type CaptureInput = {
+  readonly clientCaptureId: string;
+  readonly text: string;
+  readonly capturedAt: string;
+  readonly metadata: Readonly<Record<string, unknown>>;
+};
+
 const MAX_EMAIL_LENGTH = 254;
 const MAX_TITLE_LENGTH = 160;
 const MAX_BODY_LENGTH = 10_000;
 const MAX_STATUS_NOTE_LENGTH = 2_000;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/u;
+const CAPTURE_KEYS = new Set(["client_capture_id", "text", "captured_at", "metadata"]);
 
 export function validateEmail(rawEmail: string | null): ValidationResult<string> {
   if (rawEmail === null) {
@@ -115,6 +125,100 @@ export function validateReorderInput(value: unknown): ValidationResult<ReorderIn
   return { ok: true, value: { movedId, previousId, nextId } };
 }
 
+export function validateCaptureInput(value: unknown): ValidationResult<CaptureInput> {
+  if (!isRecord(value) || Object.keys(value).some((key) => !CAPTURE_KEYS.has(key))) {
+    return { ok: false, message: "Invalid capture payload." };
+  }
+
+  const clientCaptureId = value["client_capture_id"];
+  const text = value["text"];
+  const capturedAt = value["captured_at"];
+  const metadata = value["metadata"];
+
+  if (typeof clientCaptureId !== "string" || !UUID_PATTERN.test(clientCaptureId)) {
+    return { ok: false, message: "client_capture_id must be a UUID." };
+  }
+
+  if (typeof text !== "string" || text.trim().length === 0) {
+    return { ok: false, message: "text must be a non-empty string." };
+  }
+
+  if (
+    typeof capturedAt !== "string"
+    || !isValidIsoTimestamp(capturedAt)
+  ) {
+    return { ok: false, message: "captured_at must be an ISO timestamp." };
+  }
+
+  if (!isRecord(metadata)) {
+    return { ok: false, message: "metadata must be an object." };
+  }
+
+  return {
+    ok: true,
+    value: {
+      clientCaptureId,
+      text,
+      capturedAt,
+      metadata,
+    },
+  };
+}
+
+function isValidIsoTimestamp(value: string): boolean {
+  const match = ISO_TIMESTAMP_PATTERN.exec(value);
+
+  if (match === null || Number.isNaN(Date.parse(value))) {
+    return false;
+  }
+
+  const [, rawYear, rawMonth, rawDay, rawHour, rawMinute, rawSecond, rawOffsetHour, rawOffsetMinute] = match;
+
+  if (
+    rawYear === undefined
+    || rawMonth === undefined
+    || rawDay === undefined
+    || rawHour === undefined
+    || rawMinute === undefined
+    || rawSecond === undefined
+  ) {
+    return false;
+  }
+
+  const year = Number(rawYear);
+  const month = Number(rawMonth);
+  const day = Number(rawDay);
+  const hour = Number(rawHour);
+  const minute = Number(rawMinute);
+  const second = Number(rawSecond);
+  const offsetHour = rawOffsetHour === undefined ? 0 : Number(rawOffsetHour);
+  const offsetMinute = rawOffsetMinute === undefined ? 0 : Number(rawOffsetMinute);
+
+  return (
+    month >= 1
+    && month <= 12
+    && day >= 1
+    && day <= daysInMonth(year, month)
+    && hour <= 23
+    && minute <= 59
+    && second <= 59
+    && offsetHour <= 23
+    && offsetMinute <= 59
+  );
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    return isLeapYear(year) ? 29 : 28;
+  }
+
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
 function normalizeOptionalText(rawText: string | null): string | null {
   if (rawText === null) {
     return null;
@@ -129,5 +233,5 @@ function isNullableString(value: unknown): value is string | null {
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

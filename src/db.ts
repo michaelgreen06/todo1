@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { generateKeyBetween } from "fractional-indexing";
 
+import { getTodoDatabasePath } from "./process-env.js";
+
 export const STATUS_CATEGORIES = {
   active: "active",
   deferred: "deferred",
@@ -34,6 +36,39 @@ export type Session = {
   readonly revokedAt: string | null;
 };
 
+export type DeviceToken = {
+  readonly id: string;
+  readonly userId: string;
+  readonly name: string;
+  readonly tokenHash: string;
+  readonly createdAt: string;
+  readonly revokedAt: string | null;
+};
+
+export type Capture = {
+  readonly id: string;
+  readonly userId: string;
+  readonly deviceTokenId: string;
+  readonly clientCaptureId: string;
+  readonly text: string;
+  readonly capturedAt: string;
+  readonly metadataJson: string;
+  readonly createdAt: string;
+};
+
+export type CaptureInput = {
+  readonly clientCaptureId: string;
+  readonly text: string;
+  readonly capturedAt: string;
+  readonly metadata: Readonly<Record<string, unknown>>;
+};
+
+export type CaptureIngestionResult = {
+  readonly captureId: string;
+  readonly routedItemId: string;
+  readonly duplicate: boolean;
+};
+
 export type Status = {
   readonly id: string;
   readonly userId: string;
@@ -55,6 +90,7 @@ export type Item = {
   readonly kind: string;
   readonly title: string | null;
   readonly body: string;
+  readonly sourceCaptureId: string | null;
   readonly statusChangedAt: string;
   readonly todoRank: string | null;
   readonly todoRankChangedAt: string | null;
@@ -80,7 +116,6 @@ export type ReorderItemInput = {
 type UnknownRecord = Readonly<Record<string, unknown>>;
 
 const SQLITE_BIN = "/usr/bin/sqlite3";
-const DATABASE_PATH = "todo.sqlite";
 const ITEM_KIND = "todo";
 
 const SEEDED_STATUSES = [
@@ -121,6 +156,15 @@ export function initializeDatabase(): void {
       revoked_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS device_tokens (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      revoked_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS nodes (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -143,6 +187,18 @@ export function initializeDatabase(): void {
       UNIQUE (user_id, name)
     );
 
+    CREATE TABLE IF NOT EXISTS captures (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      device_token_id TEXT NOT NULL REFERENCES device_tokens(id) ON DELETE RESTRICT,
+      client_capture_id TEXT NOT NULL,
+      text TEXT NOT NULL,
+      captured_at TEXT NOT NULL,
+      metadata_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (device_token_id, client_capture_id)
+    );
+
     CREATE TABLE IF NOT EXISTS items (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -151,6 +207,7 @@ export function initializeDatabase(): void {
       kind TEXT NOT NULL,
       title TEXT,
       body TEXT NOT NULL,
+      source_capture_id TEXT REFERENCES captures(id) ON DELETE RESTRICT,
       status_changed_at TEXT NOT NULL,
       todo_rank TEXT,
       todo_rank_changed_at TEXT,
@@ -169,6 +226,7 @@ export function initializeDatabase(): void {
 
     CREATE INDEX IF NOT EXISTS idx_login_tokens_hash ON login_tokens(token_hash);
     CREATE INDEX IF NOT EXISTS idx_sessions_hash ON sessions(session_hash);
+    CREATE INDEX IF NOT EXISTS idx_device_tokens_hash ON device_tokens(token_hash);
     CREATE INDEX IF NOT EXISTS idx_nodes_user_parent ON nodes(user_id, parent_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_sibling_name
       ON nodes(user_id, parent_id, name) WHERE parent_id IS NOT NULL;
@@ -179,6 +237,28 @@ export function initializeDatabase(): void {
       ON items(user_id, status_id, todo_rank) WHERE todo_rank IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_item_status_changes_history
       ON item_status_changes(item_id, changed_at DESC);
+  `);
+
+  if (!tableHasColumn("items", "source_capture_id")) {
+    executeSql("ALTER TABLE items ADD COLUMN source_capture_id TEXT REFERENCES captures(id) ON DELETE RESTRICT;");
+  }
+
+  if (!tableHasColumn("captures", "text")) {
+    if (!tableHasColumn("captures", "transcript")) {
+      throw new Error("Captures table does not have a compatible text column.");
+    }
+
+    executeSql(`
+      BEGIN IMMEDIATE;
+      ALTER TABLE captures ADD COLUMN text TEXT NOT NULL DEFAULT '';
+      UPDATE captures SET text = transcript;
+      COMMIT;
+    `);
+  }
+
+  executeSql(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_items_source_capture
+      ON items(source_capture_id) WHERE source_capture_id IS NOT NULL;
   `);
 }
 
@@ -264,6 +344,116 @@ export function revokeSession(sessionHash: string): void {
   `);
 }
 
+export function createDeviceToken(userId: string, name: string, tokenHash: string): DeviceToken {
+  const deviceToken: DeviceToken = {
+    id: globalThis.crypto.randomUUID(),
+    userId,
+    name,
+    tokenHash,
+    createdAt: nowIso(),
+    revokedAt: null,
+  };
+
+  executeSql(`
+    INSERT INTO device_tokens (id, user_id, name, token_hash, created_at, revoked_at)
+    VALUES (
+      ${sql(deviceToken.id)}, ${sql(deviceToken.userId)}, ${sql(deviceToken.name)},
+      ${sql(deviceToken.tokenHash)}, ${sql(deviceToken.createdAt)}, NULL
+    );
+  `);
+
+  return deviceToken;
+}
+
+export function findActiveDeviceToken(tokenHash: string): DeviceToken | null {
+  const row = firstRow(queryRows(`
+    SELECT id, user_id, name, token_hash, created_at, revoked_at
+    FROM device_tokens
+    WHERE token_hash = ${sql(tokenHash)} AND revoked_at IS NULL
+    LIMIT 1;
+  `));
+
+  return row === null ? null : mapDeviceToken(row);
+}
+
+export function revokeDeviceToken(tokenHash: string): void {
+  executeSql(`
+    UPDATE device_tokens
+    SET revoked_at = ${sql(nowIso())}
+    WHERE token_hash = ${sql(tokenHash)} AND revoked_at IS NULL;
+  `);
+}
+
+export function routeCaptureForMvp(deviceToken: DeviceToken, input: CaptureInput): CaptureIngestionResult {
+  const existingCapture = findCaptureForDeviceToken(deviceToken.id, input.clientCaptureId);
+
+  if (existingCapture !== null) {
+    return getCaptureIngestionResult(existingCapture, true);
+  }
+
+  const defaultStatus = findDefaultStatus(deviceToken.userId);
+
+  if (defaultStatus === null) {
+    throw new Error("User does not have a default status.");
+  }
+
+  const capture: Capture = {
+    id: globalThis.crypto.randomUUID(),
+    userId: deviceToken.userId,
+    deviceTokenId: deviceToken.id,
+    clientCaptureId: input.clientCaptureId,
+    text: input.text,
+    capturedAt: input.capturedAt,
+    metadataJson: JSON.stringify(input.metadata),
+    createdAt: nowIso(),
+  };
+  const itemId = globalThis.crypto.randomUUID();
+  const historyId = globalThis.crypto.randomUUID();
+  const todoRank = generateTopTodoRank(deviceToken.userId);
+  const captureInsert = tableHasColumn("captures", "transcript")
+    ? `INSERT OR IGNORE INTO captures (
+      id, user_id, device_token_id, client_capture_id, text, transcript, captured_at, metadata_json, created_at
+    ) VALUES (
+      ${sql(capture.id)}, ${sql(capture.userId)}, ${sql(capture.deviceTokenId)}, ${sql(capture.clientCaptureId)},
+      ${sql(capture.text)}, ${sql(capture.text)}, ${sql(capture.capturedAt)}, ${sql(capture.metadataJson)},
+      ${sql(capture.createdAt)}
+    );`
+    : `INSERT OR IGNORE INTO captures (
+      id, user_id, device_token_id, client_capture_id, text, captured_at, metadata_json, created_at
+    ) VALUES (
+      ${sql(capture.id)}, ${sql(capture.userId)}, ${sql(capture.deviceTokenId)}, ${sql(capture.clientCaptureId)},
+      ${sql(capture.text)}, ${sql(capture.capturedAt)}, ${sql(capture.metadataJson)}, ${sql(capture.createdAt)}
+    );`;
+
+  executeSql(`
+    BEGIN IMMEDIATE;
+    ${captureInsert}
+    INSERT INTO items (
+      id, user_id, node_id, status_id, kind, title, body, source_capture_id, status_changed_at,
+      todo_rank, todo_rank_changed_at, created_at, updated_at
+    )
+    SELECT
+      ${sql(itemId)}, ${sql(capture.userId)}, NULL, ${sql(defaultStatus.id)}, ${sql(ITEM_KIND)}, NULL,
+      ${sql(capture.text)}, ${sql(capture.id)}, ${sql(capture.createdAt)}, ${sql(todoRank)}, NULL,
+      ${sql(capture.createdAt)}, ${sql(capture.createdAt)}
+    FROM captures
+    WHERE id = ${sql(capture.id)};
+    INSERT INTO item_status_changes (id, item_id, from_status_id, to_status_id, note, changed_at)
+    SELECT ${sql(historyId)}, ${sql(itemId)}, NULL, ${sql(defaultStatus.id)}, NULL, ${sql(capture.createdAt)}
+    FROM items
+    WHERE id = ${sql(itemId)};
+    COMMIT;
+  `);
+
+  const persistedCapture = findCaptureForDeviceToken(deviceToken.id, input.clientCaptureId);
+
+  if (persistedCapture === null) {
+    throw new Error("Newly created capture could not be found.");
+  }
+
+  return getCaptureIngestionResult(persistedCapture, persistedCapture.id !== capture.id);
+}
+
 export function consumeLoginTokenAndCreateSession(
   tokenHash: string,
   sessionHash: string,
@@ -346,11 +536,11 @@ export function createTodoItem(userId: string, title: string | null, body: strin
   executeSql(`
     BEGIN IMMEDIATE;
     INSERT INTO items (
-      id, user_id, node_id, status_id, kind, title, body, status_changed_at,
+      id, user_id, node_id, status_id, kind, title, body, source_capture_id, status_changed_at,
       todo_rank, todo_rank_changed_at, created_at, updated_at
     ) VALUES (
       ${sql(itemId)}, ${sql(userId)}, NULL, ${sql(defaultStatus.id)}, ${sql(ITEM_KIND)}, ${sql(title)}, ${sql(body)},
-      ${sql(timestamp)}, ${sql(todoRank)}, NULL, ${sql(timestamp)}, ${sql(timestamp)}
+      NULL, ${sql(timestamp)}, ${sql(todoRank)}, NULL, ${sql(timestamp)}, ${sql(timestamp)}
     );
     INSERT INTO item_status_changes (id, item_id, from_status_id, to_status_id, note, changed_at)
     VALUES (${sql(globalThis.crypto.randomUUID())}, ${sql(itemId)}, NULL, ${sql(defaultStatus.id)}, NULL, ${sql(timestamp)});
@@ -470,6 +660,36 @@ function findDefaultStatus(userId: string): Status | null {
   return row === null ? null : mapStatus(row);
 }
 
+function findCaptureForDeviceToken(deviceTokenId: string, clientCaptureId: string): Capture | null {
+  const row = firstRow(queryRows(`
+    SELECT id, user_id, device_token_id, client_capture_id, text, captured_at, metadata_json, created_at
+    FROM captures
+    WHERE device_token_id = ${sql(deviceTokenId)} AND client_capture_id = ${sql(clientCaptureId)}
+    LIMIT 1;
+  `));
+
+  return row === null ? null : mapCapture(row);
+}
+
+function getCaptureIngestionResult(capture: Capture, duplicate: boolean): CaptureIngestionResult {
+  const itemRow = firstRow(queryRows(`
+    SELECT id
+    FROM items
+    WHERE source_capture_id = ${sql(capture.id)}
+    LIMIT 1;
+  `));
+
+  if (itemRow === null) {
+    throw new Error("Capture does not have a routed item.");
+  }
+
+  return {
+    captureId: capture.id,
+    routedItemId: getRequiredString(itemRow, "id"),
+    duplicate,
+  };
+}
+
 function findStatusForUser(statusId: string, userId: string): Status | null {
   const row = firstRow(queryRows(`
     SELECT id, user_id, name, category, show_in_todo_view, is_default_for_new_items, created_at, updated_at
@@ -513,18 +733,18 @@ function findInsertionNeighbors(
 function itemSelect(): string {
   return `SELECT items.id, items.user_id, items.node_id, items.status_id,
     statuses.name AS status_name, statuses.category AS status_category,
-    items.kind, items.title, items.body, items.status_changed_at,
+    items.kind, items.title, items.body, items.source_capture_id, items.status_changed_at,
     items.todo_rank, items.todo_rank_changed_at, items.created_at, items.updated_at
     FROM items
     JOIN statuses ON statuses.id = items.status_id`;
 }
 
 function executeSql(statement: string): void {
-  execFileSync(SQLITE_BIN, [DATABASE_PATH, `PRAGMA foreign_keys = ON;\n${statement}`], { encoding: "utf8" });
+  execFileSync(SQLITE_BIN, [getTodoDatabasePath(), `PRAGMA foreign_keys = ON;\n${statement}`], { encoding: "utf8" });
 }
 
 function queryRows(statement: string): Array<UnknownRecord> {
-  const output = execFileSync(SQLITE_BIN, ["-json", DATABASE_PATH, `PRAGMA foreign_keys = ON;\n${statement}`], {
+  const output = execFileSync(SQLITE_BIN, ["-json", getTodoDatabasePath(), `PRAGMA foreign_keys = ON;\n${statement}`], {
     encoding: "utf8",
   });
   const trimmedOutput = output.trim();
@@ -540,6 +760,10 @@ function queryRows(statement: string): Array<UnknownRecord> {
   }
 
   return parsed.filter(isRecord);
+}
+
+function tableHasColumn(tableName: string, columnName: string): boolean {
+  return queryRows(`PRAGMA table_info(${tableName});`).some((row) => row["name"] === columnName);
 }
 
 function firstRow(rows: ReadonlyArray<UnknownRecord>): UnknownRecord | null {
@@ -585,6 +809,30 @@ function mapSession(row: UnknownRecord): Session {
   };
 }
 
+function mapDeviceToken(row: UnknownRecord): DeviceToken {
+  return {
+    id: getRequiredString(row, "id"),
+    userId: getRequiredString(row, "user_id"),
+    name: getRequiredString(row, "name"),
+    tokenHash: getRequiredString(row, "token_hash"),
+    createdAt: getRequiredString(row, "created_at"),
+    revokedAt: getOptionalString(row, "revoked_at"),
+  };
+}
+
+function mapCapture(row: UnknownRecord): Capture {
+  return {
+    id: getRequiredString(row, "id"),
+    userId: getRequiredString(row, "user_id"),
+    deviceTokenId: getRequiredString(row, "device_token_id"),
+    clientCaptureId: getRequiredString(row, "client_capture_id"),
+    text: getRequiredString(row, "text"),
+    capturedAt: getRequiredString(row, "captured_at"),
+    metadataJson: getRequiredString(row, "metadata_json"),
+    createdAt: getRequiredString(row, "created_at"),
+  };
+}
+
 function mapStatus(row: UnknownRecord): Status {
   const category = getRequiredString(row, "category");
 
@@ -621,6 +869,7 @@ function mapItem(row: UnknownRecord): Item {
     kind: getRequiredString(row, "kind"),
     title: getOptionalString(row, "title"),
     body: getRequiredString(row, "body"),
+    sourceCaptureId: getOptionalString(row, "source_capture_id"),
     statusChangedAt: getRequiredString(row, "status_changed_at"),
     todoRank: getOptionalString(row, "todo_rank"),
     todoRankChangedAt: getOptionalString(row, "todo_rank_changed_at"),

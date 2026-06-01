@@ -48,3 +48,9 @@ declare module "node:http" {
     listener: (request: IncomingMessage, response: ServerResponse) => void,
   ): Server;
 }
+
+declare module "node:process" {
+  export const argv: ReadonlyArray<string>;
+  export const env: Record<string, string | undefined>;
+  export function exit(code?: number): never;
+}

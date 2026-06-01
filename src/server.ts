@@ -10,6 +10,7 @@ import {
 import {
   changeItemStatus,
   createTodoItem,
+  findActiveDeviceToken,
   findItemForUser,
   initializeDatabase,
   listItemStatusChanges,
@@ -17,6 +18,7 @@ import {
   listVisibleTodoItems,
   moveVisibleTodoItem,
   reorderVisibleTodoItem,
+  routeCaptureForMvp,
   updateTodoItem,
 } from "./db.js";
 import {
@@ -25,7 +27,9 @@ import {
   renderNotFoundPage,
   renderTodoPage,
 } from "./html.js";
+import { hashRawToken } from "./token.js";
 import {
+  validateCaptureInput,
   validateEmail,
   validateReorderInput,
   validateStatusChangeInput,
@@ -36,6 +40,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 const PORT = 3000;
 const SESSION_COOKIE_NAME = "todo_session";
+const MAX_CAPTURE_REQUEST_BODY_BYTES = 64 * 1024;
 
 type AuthenticatedRequest = {
   readonly user: User;
@@ -94,6 +99,11 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
 
   if (method === "GET" && url.pathname === "/auth/magic") {
     await handleMagicAuth(url, response);
+    return;
+  }
+
+  if (method === "POST" && url.pathname === "/items") {
+    await handleCaptureIngestion(request, response);
     return;
   }
 
@@ -161,6 +171,52 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
   }
 
   sendHtml(response, 404, renderNotFoundPage());
+}
+
+async function handleCaptureIngestion(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  const rawDeviceToken = getBearerToken(request);
+
+  if (rawDeviceToken === null) {
+    sendJson(response, 401, JSON.stringify({ error: "Unauthorized" }));
+    return;
+  }
+
+  const deviceToken = findActiveDeviceToken(hashRawToken(rawDeviceToken));
+
+  if (deviceToken === null) {
+    sendJson(response, 401, JSON.stringify({ error: "Unauthorized" }));
+    return;
+  }
+
+  let rawBody: string;
+
+  try {
+    rawBody = await readRequestBody(request, MAX_CAPTURE_REQUEST_BODY_BYTES);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      sendJson(response, 400, JSON.stringify({ error: error.message }));
+      return;
+    }
+
+    throw error;
+  }
+
+  const captureResult = validateCaptureInput(parseJson(rawBody));
+
+  if (!captureResult.ok) {
+    sendJson(response, 400, JSON.stringify({ error: captureResult.message }));
+    return;
+  }
+
+  const result = routeCaptureForMvp(deviceToken, captureResult.value);
+  sendJson(response, 201, JSON.stringify({
+    capture_id: result.captureId,
+    routed_item_id: result.routedItemId,
+    duplicate: result.duplicate,
+  }));
 }
 
 async function handleLogin(
@@ -390,6 +446,17 @@ function getCookie(request: IncomingMessage, name: string): string | null {
   return decodeURIComponent(matchedCookie.slice(prefix.length));
 }
 
+function getBearerToken(request: IncomingMessage): string | null {
+  const authorizationHeader = request.headers["authorization"];
+
+  if (typeof authorizationHeader !== "string") {
+    return null;
+  }
+
+  const match = /^Bearer ([^\s]+)$/u.exec(authorizationHeader);
+  return match?.[1] ?? null;
+}
+
 function setSessionCookie(response: ServerResponse, sessionToken: string): void {
   response.setHeader(
     "Set-Cookie",
@@ -426,20 +493,51 @@ function renderErrorPage(title: string, message: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body><main><h1>${title}</h1><p>${message}</p></main></body></html>`;
 }
 
-function readRequestBody(request: IncomingMessage): Promise<string> {
+class RequestBodyTooLargeError extends Error {
+  public constructor() {
+    super("Request body is too large.");
+    this.name = "RequestBodyTooLargeError";
+  }
+}
+
+function readRequestBody(request: IncomingMessage, maxBytes: number | null = null): Promise<string> {
   return new Promise((resolve, reject) => {
     const decoder = new TextDecoder();
     let body = "";
+    let bodyBytes = 0;
+    let isSettled = false;
 
     request.on("data", (chunk) => {
+      if (isSettled) {
+        return;
+      }
+
+      bodyBytes += chunk.byteLength;
+
+      if (maxBytes !== null && bodyBytes > maxBytes) {
+        isSettled = true;
+        reject(new RequestBodyTooLargeError());
+        return;
+      }
+
       body += decoder.decode(chunk, { stream: true });
     });
 
     request.on("end", () => {
+      if (isSettled) {
+        return;
+      }
+
+      isSettled = true;
       resolve(body + decoder.decode());
     });
 
     request.on("error", (error) => {
+      if (isSettled) {
+        return;
+      }
+
+      isSettled = true;
       reject(error);
     });
   });
