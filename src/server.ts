@@ -27,6 +27,7 @@ import {
   renderNotFoundPage,
   renderTodoPage,
 } from "./html.js";
+import { getHost, getPort, getPublicBaseUrl } from "./process-env.js";
 import { hashRawToken } from "./token.js";
 import {
   validateCaptureInput,
@@ -38,7 +39,6 @@ import {
 import type { User } from "./db.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-const PORT = 3000;
 const SESSION_COOKIE_NAME = "todo_session";
 const MAX_CAPTURE_REQUEST_BODY_BYTES = 64 * 1024;
 
@@ -54,13 +54,15 @@ type RouteParams = {
 
 export function startServer(): void {
   initializeDatabase();
+  const host = getHost();
+  const port = getPort();
 
   const server = createServer((request, response) => {
     void handleRequest(request, response);
   });
 
-  server.listen(PORT, "127.0.0.1", () => {
-    console.log(`Todo MVP running at http://localhost:${PORT.toString()}`);
+  server.listen(port, host, () => {
+    console.log(`Todo MVP running at http://${host}:${port.toString()}`);
   });
 }
 
@@ -80,6 +82,11 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
   const method = request.method ?? "GET";
   const url = makeRequestUrl(request);
 
+  if (method === "GET" && url.pathname === "/healthz") {
+    sendJson(response, 200, '{"ok":true}');
+    return;
+  }
+
   if (method === "GET" && url.pathname === "/login") {
     sendHtml(
       response,
@@ -98,7 +105,7 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
   }
 
   if (method === "GET" && url.pathname === "/auth/magic") {
-    await handleMagicAuth(url, response);
+    await handleMagicAuth(request, url, response);
     return;
   }
 
@@ -116,7 +123,7 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
 
   if (method === "POST" && url.pathname === "/logout") {
     await revokeSessionToken(authenticatedRequest.sessionToken);
-    clearSessionCookie(response);
+    clearSessionCookie(response, shouldUseSecureCookies(request));
     redirect(response, "/login");
     return;
   }
@@ -231,12 +238,16 @@ async function handleLogin(
     return;
   }
 
-  const magicLink = await createMagicLoginLink(emailResult.value, getBaseUrl(request));
+  const magicLink = await createMagicLoginLink(emailResult.value, getEffectiveBaseUrl(request));
   console.log(`Magic login link for ${magicLink.user.email}: ${magicLink.loginUrl}`);
   redirect(response, "/login?sent=1");
 }
 
-async function handleMagicAuth(url: URL, response: ServerResponse): Promise<void> {
+async function handleMagicAuth(
+  request: IncomingMessage,
+  url: URL,
+  response: ServerResponse,
+): Promise<void> {
   const consumedToken = await consumeMagicToken(url.searchParams.get("token"));
 
   if (consumedToken === null) {
@@ -248,7 +259,7 @@ async function handleMagicAuth(url: URL, response: ServerResponse): Promise<void
     return;
   }
 
-  setSessionCookie(response, consumedToken.sessionToken);
+  setSessionCookie(response, consumedToken.sessionToken, shouldUseSecureCookies(request));
   redirect(response, "/");
 }
 
@@ -419,13 +430,18 @@ function parseTodoRoute(pathname: string): RouteParams | null {
 }
 
 function makeRequestUrl(request: IncomingMessage): URL {
-  return new URL(request.url ?? "/", getBaseUrl(request));
+  return new URL(request.url ?? "/", getRequestBaseUrl(request));
 }
 
-function getBaseUrl(request: IncomingMessage): string {
+function getRequestBaseUrl(request: IncomingMessage): string {
   const hostHeader = request.headers["host"];
-  const host = typeof hostHeader === "string" ? hostHeader : `localhost:${PORT.toString()}`;
+  const host = typeof hostHeader === "string" ? hostHeader : `${getHost()}:${getPort().toString()}`;
   return `http://${host}`;
+}
+
+function getEffectiveBaseUrl(request: IncomingMessage): string {
+  const configuredBaseUrl = getPublicBaseUrl();
+  return (configuredBaseUrl ?? getRequestBaseUrl(request)).replace(/\/+$/u, "");
 }
 
 function getCookie(request: IncomingMessage, name: string): string | null {
@@ -457,18 +473,35 @@ function getBearerToken(request: IncomingMessage): string | null {
   return match?.[1] ?? null;
 }
 
-function setSessionCookie(response: ServerResponse, sessionToken: string): void {
+function shouldUseSecureCookies(request: IncomingMessage): boolean {
+  return new URL(getEffectiveBaseUrl(request)).protocol === "https:";
+}
+
+function setSessionCookie(
+  response: ServerResponse,
+  sessionToken: string,
+  useSecureCookies: boolean,
+): void {
   response.setHeader(
     "Set-Cookie",
-    `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionToken)}; Max-Age=${getSessionMaxAgeSeconds().toString()}; Path=/; HttpOnly; SameSite=Lax`,
+    createSessionCookieValue(sessionToken, getSessionMaxAgeSeconds(), useSecureCookies),
   );
 }
 
-function clearSessionCookie(response: ServerResponse): void {
+function clearSessionCookie(response: ServerResponse, useSecureCookies: boolean): void {
   response.setHeader(
     "Set-Cookie",
-    `${SESSION_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax`,
+    createSessionCookieValue("", 0, useSecureCookies),
   );
+}
+
+function createSessionCookieValue(
+  sessionToken: string,
+  maxAgeSeconds: number,
+  useSecureCookies: boolean,
+): string {
+  const secureAttribute = useSecureCookies ? "; Secure" : "";
+  return `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionToken)}; Max-Age=${maxAgeSeconds.toString()}; Path=/; HttpOnly; SameSite=Lax${secureAttribute}`;
 }
 
 function redirect(response: ServerResponse, location: string): void {

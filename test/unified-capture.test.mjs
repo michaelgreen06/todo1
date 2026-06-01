@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { env } from "node:process";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { URL, fileURLToPath } from "node:url";
 import { TextEncoder } from "node:util";
 
 import {
@@ -15,7 +15,12 @@ import {
   initializeDatabase,
   revokeDeviceToken,
 } from "../dist/db.js";
-import { getTodoDatabasePath } from "../dist/process-env.js";
+import {
+  getHost,
+  getPort,
+  getPublicBaseUrl,
+  getTodoDatabasePath,
+} from "../dist/process-env.js";
 import { handleRequest } from "../dist/server.js";
 import { hashRawToken } from "../dist/token.js";
 
@@ -37,6 +42,58 @@ test("unified capture server MVP", async (suite) => {
       assert.equal(getTodoDatabasePath(), "todo.sqlite");
     } finally {
       restoreDatabasePath(previousDatabasePath);
+    }
+  });
+
+  await suite.test("defaults HOST and PORT and leaves PUBLIC_BASE_URL unset", () => {
+    withEnvironment({ HOST: undefined, PORT: undefined, PUBLIC_BASE_URL: undefined }, () => {
+      assert.equal(getHost(), "127.0.0.1");
+      assert.equal(getPort(), 3000);
+      assert.equal(getPublicBaseUrl(), null);
+    });
+  });
+
+  await suite.test("reads configured HOST PORT and PUBLIC_BASE_URL", () => {
+    withEnvironment({
+      HOST: "0.0.0.0",
+      PORT: "4312",
+      PUBLIC_BASE_URL: "https://todo.example.com/",
+    }, () => {
+      assert.equal(getHost(), "0.0.0.0");
+      assert.equal(getPort(), 4312);
+      assert.equal(getPublicBaseUrl(), "https://todo.example.com");
+    });
+  });
+
+  await suite.test("rejects invalid HOST PORT and PUBLIC_BASE_URL values", () => {
+    withEnvironment({ HOST: "   " }, () => {
+      assert.throws(() => {
+        getHost();
+      }, /HOST must not be empty\./u);
+    });
+
+    for (const port of ["0", "65536", "abc", "12.3"]) {
+      withEnvironment({ PORT: port }, () => {
+        assert.throws(() => {
+          getPort();
+        }, /PORT must be an integer between 1 and 65535\./u);
+      });
+    }
+
+    for (const publicBaseUrl of [
+      "   ",
+      "/relative",
+      "ftp://todo.example.com",
+      "https://user:pass@todo.example.com",
+      "https://todo.example.com?debug=1",
+      "https://todo.example.com#hash",
+      "https://todo.example.com/app",
+    ]) {
+      withEnvironment({ PUBLIC_BASE_URL: publicBaseUrl }, () => {
+        assert.throws(() => {
+          getPublicBaseUrl();
+        }, /PUBLIC_BASE_URL/u);
+      });
     }
   });
 
@@ -229,6 +286,82 @@ test("unified capture server MVP", async (suite) => {
     });
   });
 
+  await suite.test("serves unauthenticated healthz after init", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const response = await sendRequest({ method: "GET", url: "/healthz" });
+      assert.equal(response.statusCode, 200);
+      assert.equal(response.headers["Content-Type"], "application/json; charset=utf-8");
+      assert.deepEqual(JSON.parse(response.body), { ok: true });
+    });
+  });
+
+  await suite.test("uses request host for magic links when PUBLIC_BASE_URL is unset", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+
+      await withEnvironment({ PUBLIC_BASE_URL: undefined }, async () => {
+        const capturedLogs = captureConsoleLogs();
+
+        try {
+          const response = await sendRequest({
+            method: "POST",
+            url: "/login",
+            headers: { host: "127.0.0.1:4010" },
+            body: "email=person%40example.com",
+          });
+
+          assert.equal(response.statusCode, 303);
+          assert.equal(response.headers.Location, "/login?sent=1");
+          assert.match(capturedLogs.lines.at(-1) ?? "", /http:\/\/127\.0\.0\.1:4010\/auth\/magic\?token=/u);
+        } finally {
+          capturedLogs.restore();
+        }
+      });
+    });
+  });
+
+  await suite.test("uses HTTPS PUBLIC_BASE_URL for magic links and secure session cookies", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+
+      await withEnvironment({ PUBLIC_BASE_URL: "https://todo.example.com" }, async () => {
+        const capturedLogs = captureConsoleLogs();
+
+        try {
+          const loginResponse = await sendRequest({
+            method: "POST",
+            url: "/login",
+            headers: { host: "127.0.0.1:3000" },
+            body: "email=secure%40example.com",
+          });
+
+          assert.equal(loginResponse.statusCode, 303);
+          assert.equal(loginResponse.headers.Location, "/login?sent=1");
+
+          const magicLinkLog = capturedLogs.lines.at(-1) ?? "";
+          assert.match(magicLinkLog, /https:\/\/todo\.example\.com\/auth\/magic\?token=/u);
+
+          const magicLinkUrl = new URL(extractMagicLink(magicLinkLog));
+          const authResponse = await sendRequest({
+            method: "GET",
+            url: `${magicLinkUrl.pathname}${magicLinkUrl.search}`,
+            headers: { host: "127.0.0.1:3000" },
+          });
+
+          assert.equal(authResponse.statusCode, 303);
+          assert.equal(authResponse.headers.Location, "/");
+          assert.match(
+            authResponse.headers["Set-Cookie"] ?? "",
+            /^todo_session=[^;]+; Max-Age=\d+; Path=\/; HttpOnly; SameSite=Lax; Secure$/u,
+          );
+        } finally {
+          capturedLogs.restore();
+        }
+      });
+    });
+  });
+
   await suite.test("rejects malformed capture envelopes and phone routing fields", async () => {
     await withDatabaseAsync(async (databasePath) => {
       initializeDatabase();
@@ -364,6 +497,44 @@ async function withDatabaseAsync(run) {
   }
 }
 
+function withEnvironment(updates, run) {
+  const previousValues = {
+    HOST: env.HOST,
+    PORT: env.PORT,
+    PUBLIC_BASE_URL: env.PUBLIC_BASE_URL,
+  };
+
+  for (const [name, value] of Object.entries(updates)) {
+    if (value === undefined) {
+      delete env[name];
+    } else {
+      env[name] = value;
+    }
+  }
+
+  try {
+    const result = run();
+
+    if (result !== null && typeof result === "object" && "then" in result) {
+      return result.finally(() => {
+        restoreEnvironmentValue("HOST", previousValues.HOST);
+        restoreEnvironmentValue("PORT", previousValues.PORT);
+        restoreEnvironmentValue("PUBLIC_BASE_URL", previousValues.PUBLIC_BASE_URL);
+      });
+    }
+
+    restoreEnvironmentValue("HOST", previousValues.HOST);
+    restoreEnvironmentValue("PORT", previousValues.PORT);
+    restoreEnvironmentValue("PUBLIC_BASE_URL", previousValues.PUBLIC_BASE_URL);
+    return result;
+  } catch (error) {
+    restoreEnvironmentValue("HOST", previousValues.HOST);
+    restoreEnvironmentValue("PORT", previousValues.PORT);
+    restoreEnvironmentValue("PUBLIC_BASE_URL", previousValues.PUBLIC_BASE_URL);
+    throw error;
+  }
+}
+
 function restoreDatabasePath(previousDatabasePath) {
   if (previousDatabasePath === undefined) {
     delete env.TODO_DATABASE_PATH;
@@ -372,21 +543,33 @@ function restoreDatabasePath(previousDatabasePath) {
   }
 }
 
+function restoreEnvironmentValue(name, previousValue) {
+  if (previousValue === undefined) {
+    delete env[name];
+  } else {
+    env[name] = previousValue;
+  }
+}
+
 async function postCapture(authorization, capture) {
   const headers = authorization === undefined ? {} : { authorization };
-  const request = createRequest(headers, JSON.stringify(capture));
+  return sendRequest({ method: "POST", url: "/items", headers, body: JSON.stringify(capture) });
+}
+
+async function sendRequest({ method, url, headers = {}, body = "" }) {
+  const request = createRequest({ method, url, headers, body });
   const response = createResponse();
   await handleRequest(request, response);
   return response;
 }
 
-function createRequest(headers, body) {
+function createRequest({ method, url, headers, body }) {
   return {
-    method: "POST",
-    url: "/items",
+    method,
+    url,
     headers,
     on(event, listener) {
-      if (event === "data") {
+      if (event === "data" && body.length > 0) {
         listener(encoder.encode(body));
       }
 
@@ -395,6 +578,32 @@ function createRequest(headers, body) {
       }
     },
   };
+}
+
+function captureConsoleLogs() {
+  const lines = [];
+  const previousLog = globalThis.console.log;
+
+  globalThis.console.log = (...args) => {
+    lines.push(args.map((value) => String(value)).join(" "));
+  };
+
+  return {
+    lines,
+    restore() {
+      globalThis.console.log = previousLog;
+    },
+  };
+}
+
+function extractMagicLink(logLine) {
+  const match = /https?:\/\/\S+/u.exec(logLine);
+
+  if (match === null) {
+    throw new Error(`Expected magic link in log line: ${logLine}`);
+  }
+
+  return match[0];
 }
 
 function createResponse() {
