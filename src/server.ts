@@ -9,14 +9,22 @@ import {
 } from "./auth.js";
 import {
   changeItemStatus,
+  countInboxItems,
+  createFolderPath,
   createTodoItem,
+  deleteEmptyLeafFolder,
   findActiveDeviceToken,
+  findFolderForUser,
   findItemForUser,
   initializeDatabase,
+  listFolderAncestors,
+  listFolders,
   listItemStatusChanges,
   listStatuses,
-  listVisibleTodoItems,
+  listTodoItems,
+  moveTodoItemToLocation,
   moveVisibleTodoItem,
+  renameFolder,
   reorderVisibleTodoItem,
   routeCaptureForMvp,
   updateTodoItem,
@@ -32,11 +40,14 @@ import { hashRawToken } from "./token.js";
 import {
   validateCaptureInput,
   validateEmail,
+  validateFolderName,
+  validateFolderPath,
+  validateLocationInput,
   validateReorderInput,
   validateStatusChangeInput,
   validateTodoInput,
 } from "./validation.js";
-import type { User } from "./db.js";
+import type { Folder, Status, User } from "./db.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 const SESSION_COOKIE_NAME = "todo_session";
@@ -52,11 +63,17 @@ type RouteParams = {
   readonly action: string;
 };
 
+type PageContext = {
+  readonly folder: Folder | null;
+  readonly statuses: ReadonlyArray<Status>;
+  readonly selectedStatusIds: ReadonlyArray<string>;
+  readonly returnTo: string;
+};
+
 export function startServer(): void {
   initializeDatabase();
   const host = getHost();
   const port = getPort();
-
   const server = createServer((request, response) => {
     void handleRequest(request, response);
   });
@@ -66,10 +83,7 @@ export function startServer(): void {
   });
 }
 
-export async function handleRequest(
-  request: IncomingMessage,
-  response: ServerResponse,
-): Promise<void> {
+export async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
   try {
     await routeRequest(request, response);
   } catch (error) {
@@ -88,14 +102,10 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
   }
 
   if (method === "GET" && url.pathname === "/login") {
-    sendHtml(
-      response,
-      200,
-      renderLoginPage({
-        message: url.searchParams.get("sent") === "1" ? "Magic link created. Check the terminal." : null,
-        error: null,
-      }),
-    );
+    sendHtml(response, 200, renderLoginPage({
+      message: url.searchParams.get("sent") === "1" ? "Magic link created. Check the terminal." : null,
+      error: null,
+    }));
     return;
   }
 
@@ -121,6 +131,8 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
     return;
   }
 
+  const user = authenticatedRequest.user;
+
   if (method === "POST" && url.pathname === "/logout") {
     await revokeSessionToken(authenticatedRequest.sessionToken);
     clearSessionCookie(response, shouldUseSecureCookies(request));
@@ -129,18 +141,54 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
   }
 
   if (method === "GET" && url.pathname === "/") {
-    sendTodoPage(response, authenticatedRequest.user, null);
+    sendTodoPage(response, user, url, null, null);
+    return;
+  }
+
+  if (method === "GET" && url.pathname === "/navigate") {
+    handleNavigate(response, user, url);
+    return;
+  }
+
+  if (method === "POST" && url.pathname === "/folders") {
+    await handleCreateFolder(request, response, user);
     return;
   }
 
   if (method === "POST" && url.pathname === "/todos") {
-    await handleCreateTodo(request, response, authenticatedRequest.user);
+    await handleCreateTodo(request, response, user);
     return;
   }
 
   if (method === "POST" && url.pathname === "/todos/reorder") {
-    await handleReorderTodos(request, response, authenticatedRequest.user);
+    await handleReorderTodos(request, url, response, user);
     return;
+  }
+
+  const folderRoute = parseFolderRoute(url.pathname);
+
+  if (folderRoute !== null) {
+    if (method === "GET" && folderRoute.action === "view") {
+      const folder = findFolderForUser(folderRoute.id, user.id);
+
+      if (folder === null) {
+        sendHtml(response, 404, renderNotFoundPage());
+        return;
+      }
+
+      sendTodoPage(response, user, url, folder, null);
+      return;
+    }
+
+    if (method === "POST" && folderRoute.action === "rename") {
+      await handleRenameFolder(request, response, user, folderRoute.id);
+      return;
+    }
+
+    if (method === "POST" && folderRoute.action === "delete") {
+      await handleDeleteFolder(request, response, user, folderRoute.id);
+      return;
+    }
   }
 
   const todoRoute = parseTodoRoute(url.pathname);
@@ -151,39 +199,34 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
   }
 
   if (method === "GET" && todoRoute.action === "edit") {
-    handleEditPage(response, authenticatedRequest.user, todoRoute.id);
+    handleEditPage(response, user, todoRoute.id, url);
     return;
   }
 
   if (method === "POST" && todoRoute.action === "update") {
-    await handleUpdateTodo(request, response, authenticatedRequest.user, todoRoute.id);
+    await handleUpdateTodo(request, response, user, todoRoute.id);
     return;
   }
 
   if (method === "POST" && todoRoute.action === "status") {
-    await handleChangeStatus(request, response, authenticatedRequest.user, todoRoute.id);
+    await handleChangeStatus(request, response, user, todoRoute.id);
     return;
   }
 
-  if (method === "POST" && todoRoute.action === "move-up") {
-    moveVisibleTodoItem(authenticatedRequest.user.id, todoRoute.id, "up");
-    redirect(response, "/");
+  if (method === "POST" && todoRoute.action === "location") {
+    await handleChangeLocation(request, response, user, todoRoute.id);
     return;
   }
 
-  if (method === "POST" && todoRoute.action === "move-down") {
-    moveVisibleTodoItem(authenticatedRequest.user.id, todoRoute.id, "down");
-    redirect(response, "/");
+  if (method === "POST" && (todoRoute.action === "move-up" || todoRoute.action === "move-down")) {
+    await handleMoveVisibleTodo(request, response, user, todoRoute.id, todoRoute.action === "move-up" ? "up" : "down");
     return;
   }
 
   sendHtml(response, 404, renderNotFoundPage());
 }
 
-async function handleCaptureIngestion(
-  request: IncomingMessage,
-  response: ServerResponse,
-): Promise<void> {
+async function handleCaptureIngestion(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const rawDeviceToken = getBearerToken(request);
 
   if (rawDeviceToken === null) {
@@ -226,10 +269,7 @@ async function handleCaptureIngestion(
   }));
 }
 
-async function handleLogin(
-  request: IncomingMessage,
-  response: ServerResponse,
-): Promise<void> {
+async function handleLogin(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const form = new URLSearchParams(await readRequestBody(request));
   const emailResult = validateEmail(form.get("email"));
 
@@ -243,19 +283,11 @@ async function handleLogin(
   redirect(response, "/login?sent=1");
 }
 
-async function handleMagicAuth(
-  request: IncomingMessage,
-  url: URL,
-  response: ServerResponse,
-): Promise<void> {
+async function handleMagicAuth(request: IncomingMessage, url: URL, response: ServerResponse): Promise<void> {
   const consumedToken = await consumeMagicToken(url.searchParams.get("token"));
 
   if (consumedToken === null) {
-    sendHtml(
-      response,
-      400,
-      renderLoginPage({ message: null, error: "This magic link is invalid or expired." }),
-    );
+    sendHtml(response, 400, renderLoginPage({ message: null, error: "This magic link is invalid or expired." }));
     return;
   }
 
@@ -263,24 +295,113 @@ async function handleMagicAuth(
   redirect(response, "/");
 }
 
-async function handleCreateTodo(
-  request: IncomingMessage,
-  response: ServerResponse,
-  user: User,
-): Promise<void> {
-  const form = new URLSearchParams(await readRequestBody(request));
-  const todoResult = validateTodoInput(form.get("title"), form.get("body"));
+function handleNavigate(response: ServerResponse, user: User, url: URL): void {
+  const statuses = listStatuses(user.id);
+  const selectedStatusIds = getSelectedStatusIds(url, statuses);
+  const folderId = url.searchParams.get("folderId");
+  const folder = folderId === null || folderId.length === 0 ? null : findFolderForUser(folderId, user.id);
 
-  if (!todoResult.ok) {
-    sendTodoPage(response, user, todoResult.message);
+  if (folderId !== null && folderId.length > 0 && folder === null) {
+    sendHtml(response, 404, renderNotFoundPage());
     return;
   }
 
-  createTodoItem(user.id, todoResult.value.title, todoResult.value.body);
-  redirect(response, "/");
+  redirect(response, locationUrl(folder, selectedStatusIds));
 }
 
-function handleEditPage(response: ServerResponse, user: User, todoId: string): void {
+async function handleCreateFolder(request: IncomingMessage, response: ServerResponse, user: User): Promise<void> {
+  const form = new URLSearchParams(await readRequestBody(request));
+  const returnTo = getReturnTo(form, "/");
+  const pathResult = validateFolderPath(form.get("folderPath"));
+
+  if (!pathResult.ok) {
+    sendTodoPageForReturnTo(response, user, returnTo, pathResult.message);
+    return;
+  }
+
+  const folder = createFolderPath(user.id, pathResult.value);
+  redirect(response, locationUrl(folder, getSelectedStatusIds(makeLocalUrl(returnTo), listStatuses(user.id))));
+}
+
+async function handleRenameFolder(request: IncomingMessage, response: ServerResponse, user: User, folderId: string): Promise<void> {
+  const form = new URLSearchParams(await readRequestBody(request));
+  const returnTo = getReturnTo(form, `/folders/${encodeURIComponent(folderId)}`);
+  const nameResult = validateFolderName(form.get("name"));
+
+  if (!nameResult.ok) {
+    sendTodoPageForReturnTo(response, user, returnTo, nameResult.message);
+    return;
+  }
+
+  const result = renameFolder(folderId, user.id, nameResult.value);
+
+  if (result === "not-found") {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  if (result === "duplicate") {
+    sendTodoPageForReturnTo(response, user, returnTo, "A sibling folder already uses that name.");
+    return;
+  }
+
+  redirect(response, returnTo);
+}
+
+async function handleDeleteFolder(request: IncomingMessage, response: ServerResponse, user: User, folderId: string): Promise<void> {
+  const folder = findFolderForUser(folderId, user.id);
+
+  if (folder === null) {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  const form = new URLSearchParams(await readRequestBody(request));
+  const returnTo = getReturnTo(form, `/folders/${encodeURIComponent(folderId)}`);
+  const result = deleteEmptyLeafFolder(folder.id, user.id);
+
+  if (result === "not-empty") {
+    sendTodoPageForReturnTo(response, user, returnTo, "Delete items and child folders before deleting this folder.");
+    return;
+  }
+
+  if (result === "not-found") {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  const parent = folder.parentId === null ? null : findFolderForUser(folder.parentId, user.id);
+  redirect(response, locationUrl(parent, getSelectedStatusIds(makeLocalUrl(returnTo), listStatuses(user.id))));
+}
+
+async function handleCreateTodo(request: IncomingMessage, response: ServerResponse, user: User): Promise<void> {
+  const form = new URLSearchParams(await readRequestBody(request));
+  const returnTo = getReturnTo(form, "/");
+  const todoResult = validateTodoInput(form.get("title"), form.get("body"));
+  const locationResult = validateLocationInput(form.get("folderId"), null);
+
+  if (!todoResult.ok) {
+    sendTodoPageForReturnTo(response, user, returnTo, todoResult.message);
+    return;
+  }
+
+  if (!locationResult.ok) {
+    sendTodoPageForReturnTo(response, user, returnTo, locationResult.message);
+    return;
+  }
+
+  const folderId = locationResult.value.folderId;
+
+  if (folderId !== null && findFolderForUser(folderId, user.id) === null) {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  createTodoItem(user.id, todoResult.value.title, todoResult.value.body, folderId);
+  redirect(response, returnTo);
+}
+
+function handleEditPage(response: ServerResponse, user: User, todoId: string, url: URL): void {
   const todo = findItemForUser(todoId, user.id);
 
   if (todo === null) {
@@ -291,16 +412,13 @@ function handleEditPage(response: ServerResponse, user: User, todoId: string): v
   sendHtml(response, 200, renderEditPage({
     todo,
     history: listItemStatusChanges(todo.id, user.id),
+    folders: listFolders(user.id, []),
+    returnTo: getSafeReturnTo(url.searchParams.get("returnTo"), itemLocationUrl(todo.nodeId)),
     error: null,
   }));
 }
 
-async function handleUpdateTodo(
-  request: IncomingMessage,
-  response: ServerResponse,
-  user: User,
-  todoId: string,
-): Promise<void> {
+async function handleUpdateTodo(request: IncomingMessage, response: ServerResponse, user: User, todoId: string): Promise<void> {
   const todo = findItemForUser(todoId, user.id);
 
   if (todo === null) {
@@ -309,124 +427,235 @@ async function handleUpdateTodo(
   }
 
   const form = new URLSearchParams(await readRequestBody(request));
+  const returnTo = getReturnTo(form, itemLocationUrl(todo.nodeId));
   const todoResult = validateTodoInput(form.get("title"), form.get("body"));
+  const locationResult = validateLocationInput(form.get("folderId"), null);
 
   if (!todoResult.ok) {
     sendHtml(response, 400, renderEditPage({
       todo,
       history: listItemStatusChanges(todo.id, user.id),
+      folders: listFolders(user.id, []),
+      returnTo,
       error: todoResult.message,
     }));
     return;
   }
 
-  updateTodoItem(todoId, user.id, todoResult.value.title, todoResult.value.body);
-  redirect(response, "/");
-}
-
-async function handleChangeStatus(
-  request: IncomingMessage,
-  response: ServerResponse,
-  user: User,
-  todoId: string,
-): Promise<void> {
-  const form = new URLSearchParams(await readRequestBody(request));
-  const statusResult = validateStatusChangeInput(form.get("statusId"), form.get("note"));
-
-  if (!statusResult.ok) {
-    sendTodoPage(response, user, statusResult.message);
+  if (!locationResult.ok) {
+    sendHtml(response, 400, renderEditPage({
+      todo,
+      history: listItemStatusChanges(todo.id, user.id),
+      folders: listFolders(user.id, []),
+      returnTo,
+      error: locationResult.message,
+    }));
     return;
   }
 
-  const didChange = changeItemStatus(
-    todoId,
-    user.id,
-    statusResult.value.statusId,
-    statusResult.value.note,
-  );
+  const folderId = locationResult.value.folderId;
 
-  if (!didChange) {
+  if (folderId !== null && findFolderForUser(folderId, user.id) === null) {
     sendHtml(response, 404, renderNotFoundPage());
     return;
   }
 
-  redirect(response, "/");
+  updateTodoItem(todo.id, user.id, todoResult.value.title, todoResult.value.body);
+
+  if (todo.nodeId !== folderId) {
+    moveTodoItemToLocation(todo.id, user.id, folderId);
+  }
+
+  redirect(response, returnTo);
 }
 
-async function handleReorderTodos(
+async function handleChangeStatus(request: IncomingMessage, response: ServerResponse, user: User, todoId: string): Promise<void> {
+  const form = new URLSearchParams(await readRequestBody(request));
+  const returnTo = getReturnTo(form, "/");
+  const statusResult = validateStatusChangeInput(form.get("statusId"), form.get("note"));
+
+  if (!statusResult.ok) {
+    sendTodoPageForReturnTo(response, user, returnTo, statusResult.message);
+    return;
+  }
+
+  if (!changeItemStatus(todoId, user.id, statusResult.value.statusId, statusResult.value.note)) {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  redirect(response, returnTo);
+}
+
+async function handleChangeLocation(request: IncomingMessage, response: ServerResponse, user: User, todoId: string): Promise<void> {
+  if (findItemForUser(todoId, user.id) === null) {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  const form = new URLSearchParams(await readRequestBody(request));
+  const returnTo = getReturnTo(form, "/");
+  const locationResult = validateLocationInput(form.get("folderId"), form.get("folderPath"));
+
+  if (!locationResult.ok) {
+    sendTodoPageForReturnTo(response, user, returnTo, locationResult.message);
+    return;
+  }
+
+  const folder = locationResult.value.folderPathSegments === null
+    ? null
+    : createFolderPath(user.id, locationResult.value.folderPathSegments);
+  const folderId = folder?.id ?? locationResult.value.folderId;
+
+  if (folderId !== null && findFolderForUser(folderId, user.id) === null) {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  if (!moveTodoItemToLocation(todoId, user.id, folderId)) {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  redirect(response, returnTo);
+}
+
+async function handleMoveVisibleTodo(
   request: IncomingMessage,
   response: ServerResponse,
   user: User,
+  todoId: string,
+  direction: "up" | "down",
 ): Promise<void> {
-  const parsedBody = parseJson(await readRequestBody(request));
-  const reorderResult = validateReorderInput(parsedBody);
+  const form = new URLSearchParams(await readRequestBody(request));
+  const returnTo = getReturnTo(form, "/");
+  const context = getPageContext(user, makeLocalUrl(returnTo), null);
+  moveVisibleTodoItem(user.id, todoId, direction, context.folder?.id ?? null, context.selectedStatusIds);
+  redirect(response, returnTo);
+}
 
-  if (!reorderResult.ok) {
+async function handleReorderTodos(request: IncomingMessage, url: URL, response: ServerResponse, user: User): Promise<void> {
+  const reorderResult = validateReorderInput(parseJson(await readRequestBody(request)));
+  const folderId = url.searchParams.get("folderId");
+  const folder = folderId === null || folderId.length === 0 ? null : findFolderForUser(folderId, user.id);
+
+  if (!reorderResult.ok || (folderId !== null && folderId.length > 0 && folder === null)) {
     sendJson(response, 400, '{"ok":false}');
     return;
   }
 
-  const wasReordered = reorderVisibleTodoItem(user.id, reorderResult.value);
+  const statuses = listStatuses(user.id);
+  const selectedStatusIds = getSelectedStatusIds(url, statuses);
+  const wasReordered = reorderVisibleTodoItem(user.id, reorderResult.value, folder?.id ?? null, selectedStatusIds);
+  sendJson(response, wasReordered ? 200 : 400, wasReordered ? '{"ok":true}' : '{"ok":false}');
+}
 
-  if (!wasReordered) {
-    sendJson(response, 400, '{"ok":false}');
+function sendTodoPageForReturnTo(response: ServerResponse, user: User, returnTo: string, error: string): void {
+  const url = makeLocalUrl(returnTo);
+  const folderId = parseFolderRoute(url.pathname)?.id ?? null;
+  const folder = folderId === null ? null : findFolderForUser(folderId, user.id);
+
+  if (folderId !== null && folder === null) {
+    sendHtml(response, 404, renderNotFoundPage());
     return;
   }
 
-  sendJson(response, 200, '{"ok":true}');
+  sendTodoPage(response, user, url, folder, error);
 }
 
-function sendTodoPage(response: ServerResponse, user: User, error: string | null): void {
-  sendHtml(
-    response,
-    error === null ? 200 : 400,
-    renderTodoPage({
-      user,
-      todos: listVisibleTodoItems(user.id),
-      statuses: listStatuses(user.id),
-      error,
-    }),
-  );
+function sendTodoPage(response: ServerResponse, user: User, url: URL, folder: Folder | null, error: string | null): void {
+  const context = getPageContext(user, url, folder);
+  const folders = listFolders(user.id, context.selectedStatusIds);
+
+  sendHtml(response, error === null ? 200 : 400, renderTodoPage({
+    user,
+    folder,
+    folders,
+    ancestors: folder === null ? [] : listFolderAncestors(folder.id, user.id),
+    inboxCount: countInboxItems(user.id, context.selectedStatusIds),
+    todos: listTodoItems(user.id, folder?.id ?? null, context.selectedStatusIds),
+    statuses: context.statuses,
+    selectedStatusIds: context.selectedStatusIds,
+    returnTo: context.returnTo,
+    error,
+  }));
 }
 
-async function authenticateRequest(
-  request: IncomingMessage,
-): Promise<AuthenticatedRequest | null> {
+function getPageContext(user: User, url: URL, folder: Folder | null): PageContext {
+  const statuses = listStatuses(user.id);
+  const selectedStatusIds = getSelectedStatusIds(url, statuses);
+  return { folder, statuses, selectedStatusIds, returnTo: locationUrl(folder, selectedStatusIds) };
+}
+
+function getSelectedStatusIds(url: URL, statuses: ReadonlyArray<Status>): Array<string> {
+  const validStatusIds = new Set(statuses.map((status) => status.id));
+  const selectedStatusIds = [...new Set(url.searchParams.getAll("status").filter((id) => validStatusIds.has(id)))];
+  return selectedStatusIds.length > 0
+    ? selectedStatusIds
+    : statuses.filter((status) => status.showInTodoView).map((status) => status.id);
+}
+
+function locationUrl(folder: Folder | null, statusIds: ReadonlyArray<string>): string {
+  const pathname = folder === null ? "/" : `/folders/${encodeURIComponent(folder.id)}`;
+  const query = new URLSearchParams();
+
+  for (const statusId of statusIds) {
+    query.append("status", statusId);
+  }
+
+  return `${pathname}?${query.toString()}`;
+}
+
+function itemLocationUrl(nodeId: string | null): string {
+  return nodeId === null ? "/" : `/folders/${encodeURIComponent(nodeId)}`;
+}
+
+function getReturnTo(form: URLSearchParams, fallback: string): string {
+  return getSafeReturnTo(form.get("returnTo"), fallback);
+}
+
+function getSafeReturnTo(rawReturnTo: string | null, fallback: string): string {
+  return rawReturnTo !== null && rawReturnTo.startsWith("/") && !rawReturnTo.startsWith("//")
+    ? rawReturnTo
+    : fallback;
+}
+
+function makeLocalUrl(path: string): URL {
+  return new URL(path, "http://local.todo");
+}
+
+async function authenticateRequest(request: IncomingMessage): Promise<AuthenticatedRequest | null> {
   const sessionToken = getCookie(request, SESSION_COOKIE_NAME);
   const user = await getUserForSessionToken(sessionToken);
+  return sessionToken === null || user === null ? null : { user, sessionToken };
+}
 
-  if (sessionToken === null || user === null) {
-    return null;
-  }
-
-  return { user, sessionToken };
+function parseFolderRoute(pathname: string): RouteParams | null {
+  return parseResourceRoute(pathname, "folders", "view");
 }
 
 function parseTodoRoute(pathname: string): RouteParams | null {
+  return parseResourceRoute(pathname, "todos", "update");
+}
+
+function parseResourceRoute(pathname: string, resource: string, defaultAction: string): RouteParams | null {
   const segments = pathname.split("/").filter((segment) => segment.length > 0);
 
-  if (segments.length === 2 && segments[0] === "todos") {
-    const id = segments[1];
-
-    if (id === undefined) {
-      return null;
-    }
-
-    return { id: decodeURIComponent(id), action: "update" };
-  }
-
-  if (segments.length !== 3 || segments[0] !== "todos") {
+  if ((segments.length !== 2 && segments.length !== 3) || segments[0] !== resource) {
     return null;
   }
 
   const id = segments[1];
-  const action = segments[2];
 
-  if (id === undefined || action === undefined) {
+  if (id === undefined) {
     return null;
   }
 
-  return { id: decodeURIComponent(id), action };
+  try {
+    return { id: decodeURIComponent(id), action: segments[2] ?? defaultAction };
+  } catch {
+    return null;
+  }
 }
 
 function makeRequestUrl(request: IncomingMessage): URL {
@@ -440,8 +669,7 @@ function getRequestBaseUrl(request: IncomingMessage): string {
 }
 
 function getEffectiveBaseUrl(request: IncomingMessage): string {
-  const configuredBaseUrl = getPublicBaseUrl();
-  return (configuredBaseUrl ?? getRequestBaseUrl(request)).replace(/\/+$/u, "");
+  return (getPublicBaseUrl() ?? getRequestBaseUrl(request)).replace(/\/+$/u, "");
 }
 
 function getCookie(request: IncomingMessage, name: string): string | null {
@@ -451,15 +679,9 @@ function getCookie(request: IncomingMessage, name: string): string | null {
     return null;
   }
 
-  const cookies = cookieHeader.split(";").map((cookie) => cookie.trim());
   const prefix = `${name}=`;
-  const matchedCookie = cookies.find((cookie) => cookie.startsWith(prefix));
-
-  if (matchedCookie === undefined) {
-    return null;
-  }
-
-  return decodeURIComponent(matchedCookie.slice(prefix.length));
+  const matchedCookie = cookieHeader.split(";").map((cookie) => cookie.trim()).find((cookie) => cookie.startsWith(prefix));
+  return matchedCookie === undefined ? null : decodeURIComponent(matchedCookie.slice(prefix.length));
 }
 
 function getBearerToken(request: IncomingMessage): string | null {
@@ -469,39 +691,23 @@ function getBearerToken(request: IncomingMessage): string | null {
     return null;
   }
 
-  const match = /^Bearer ([^\s]+)$/u.exec(authorizationHeader);
-  return match?.[1] ?? null;
+  return /^Bearer ([^\s]+)$/u.exec(authorizationHeader)?.[1] ?? null;
 }
 
 function shouldUseSecureCookies(request: IncomingMessage): boolean {
   return new URL(getEffectiveBaseUrl(request)).protocol === "https:";
 }
 
-function setSessionCookie(
-  response: ServerResponse,
-  sessionToken: string,
-  useSecureCookies: boolean,
-): void {
-  response.setHeader(
-    "Set-Cookie",
-    createSessionCookieValue(sessionToken, getSessionMaxAgeSeconds(), useSecureCookies),
-  );
+function setSessionCookie(response: ServerResponse, sessionToken: string, useSecureCookies: boolean): void {
+  response.setHeader("Set-Cookie", createSessionCookieValue(sessionToken, getSessionMaxAgeSeconds(), useSecureCookies));
 }
 
 function clearSessionCookie(response: ServerResponse, useSecureCookies: boolean): void {
-  response.setHeader(
-    "Set-Cookie",
-    createSessionCookieValue("", 0, useSecureCookies),
-  );
+  response.setHeader("Set-Cookie", createSessionCookieValue("", 0, useSecureCookies));
 }
 
-function createSessionCookieValue(
-  sessionToken: string,
-  maxAgeSeconds: number,
-  useSecureCookies: boolean,
-): string {
-  const secureAttribute = useSecureCookies ? "; Secure" : "";
-  return `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionToken)}; Max-Age=${maxAgeSeconds.toString()}; Path=/; HttpOnly; SameSite=Lax${secureAttribute}`;
+function createSessionCookieValue(sessionToken: string, maxAgeSeconds: number, useSecureCookies: boolean): string {
+  return `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionToken)}; Max-Age=${maxAgeSeconds.toString()}; Path=/; HttpOnly; SameSite=Lax${useSecureCookies ? "; Secure" : ""}`;
 }
 
 function redirect(response: ServerResponse, location: string): void {
@@ -557,21 +763,17 @@ function readRequestBody(request: IncomingMessage, maxBytes: number | null = nul
     });
 
     request.on("end", () => {
-      if (isSettled) {
-        return;
+      if (!isSettled) {
+        isSettled = true;
+        resolve(body + decoder.decode());
       }
-
-      isSettled = true;
-      resolve(body + decoder.decode());
     });
 
     request.on("error", (error) => {
-      if (isSettled) {
-        return;
+      if (!isSettled) {
+        isSettled = true;
+        reject(error);
       }
-
-      isSettled = true;
-      reject(error);
     });
   });
 }

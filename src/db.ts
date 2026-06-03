@@ -98,6 +98,17 @@ export type Item = {
   readonly updatedAt: string;
 };
 
+export type Folder = {
+  readonly id: string;
+  readonly userId: string;
+  readonly parentId: string | null;
+  readonly name: string;
+  readonly kind: string;
+  readonly directItemCount: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+};
+
 export type ItemStatusChange = {
   readonly id: string;
   readonly itemId: string;
@@ -228,13 +239,11 @@ export function initializeDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_sessions_hash ON sessions(session_hash);
     CREATE INDEX IF NOT EXISTS idx_device_tokens_hash ON device_tokens(token_hash);
     CREATE INDEX IF NOT EXISTS idx_nodes_user_parent ON nodes(user_id, parent_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_sibling_name
-      ON nodes(user_id, parent_id, name) WHERE parent_id IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_root_name
-      ON nodes(user_id, name) WHERE parent_id IS NULL;
     CREATE INDEX IF NOT EXISTS idx_statuses_user_lookup ON statuses(user_id, id);
     CREATE INDEX IF NOT EXISTS idx_items_visible_todo_rank
       ON items(user_id, status_id, todo_rank) WHERE todo_rank IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_items_user_node_todo_rank
+      ON items(user_id, node_id, todo_rank);
     CREATE INDEX IF NOT EXISTS idx_item_status_changes_history
       ON item_status_changes(item_id, changed_at DESC);
   `);
@@ -257,9 +266,17 @@ export function initializeDatabase(): void {
   }
 
   executeSql(`
+    DROP INDEX IF EXISTS idx_nodes_sibling_name;
+    DROP INDEX IF EXISTS idx_nodes_root_name;
+    CREATE UNIQUE INDEX idx_nodes_sibling_name
+      ON nodes(user_id, parent_id, name COLLATE NOCASE) WHERE parent_id IS NOT NULL;
+    CREATE UNIQUE INDEX idx_nodes_root_name
+      ON nodes(user_id, name COLLATE NOCASE) WHERE parent_id IS NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_items_source_capture
       ON items(source_capture_id) WHERE source_capture_id IS NOT NULL;
   `);
+
+  backfillMissingTodoRanks();
 }
 
 export function findOrCreateUserByEmail(email: string): User {
@@ -409,7 +426,7 @@ export function routeCaptureForMvp(deviceToken: DeviceToken, input: CaptureInput
   };
   const itemId = globalThis.crypto.randomUUID();
   const historyId = globalThis.crypto.randomUUID();
-  const todoRank = generateTopTodoRank(deviceToken.userId);
+  const todoRank = generateTopTodoRank(deviceToken.userId, null);
   const captureInsert = tableHasColumn("captures", "transcript")
     ? `INSERT OR IGNORE INTO captures (
       id, user_id, device_token_id, client_capture_id, text, transcript, captured_at, metadata_json, created_at
@@ -493,10 +510,162 @@ export function listVisibleTodoItems(userId: string): Array<Item> {
   return queryRows(`
     ${itemSelect()}
     WHERE items.user_id = ${sql(userId)}
+      AND items.node_id IS NULL
       AND statuses.show_in_todo_view = 1
       AND items.todo_rank IS NOT NULL
     ORDER BY items.todo_rank ASC, items.created_at ASC;
   `).map(mapItem);
+}
+
+export function listTodoItems(userId: string, nodeId: string | null, statusIds: ReadonlyArray<string>): Array<Item> {
+  if (statusIds.length === 0) {
+    return [];
+  }
+
+  return queryRows(`
+    ${itemSelect()}
+    WHERE items.user_id = ${sql(userId)}
+      AND ${nodeCondition("items.node_id", nodeId)}
+      AND items.status_id IN (${sqlList(statusIds)})
+      AND items.todo_rank IS NOT NULL
+    ORDER BY items.todo_rank ASC, items.created_at ASC;
+  `).map(mapItem);
+}
+
+export function listFolders(userId: string, statusIds: ReadonlyArray<string>): Array<Folder> {
+  const itemJoin = statusIds.length === 0
+    ? "AND 0 = 1"
+    : `AND items.status_id IN (${sqlList(statusIds)})`;
+
+  return queryRows(`
+    SELECT nodes.id, nodes.user_id, nodes.parent_id, nodes.name, nodes.kind,
+      COUNT(items.id) AS direct_item_count, nodes.created_at, nodes.updated_at
+    FROM nodes
+    LEFT JOIN items ON items.node_id = nodes.id AND items.user_id = nodes.user_id ${itemJoin}
+    WHERE nodes.user_id = ${sql(userId)} AND nodes.kind = ${sql("folder")}
+    GROUP BY nodes.id
+    ORDER BY nodes.name COLLATE NOCASE ASC, nodes.created_at ASC;
+  `).map(mapFolder);
+}
+
+export function countInboxItems(userId: string, statusIds: ReadonlyArray<string>): number {
+  if (statusIds.length === 0) {
+    return 0;
+  }
+
+  const row = firstRow(queryRows(`
+    SELECT COUNT(*) AS count
+    FROM items
+    WHERE user_id = ${sql(userId)}
+      AND node_id IS NULL
+      AND status_id IN (${sqlList(statusIds)});
+  `));
+
+  return row === null ? 0 : getRequiredNumber(row, "count");
+}
+
+export function findFolderForUser(folderId: string, userId: string): Folder | null {
+  const row = firstRow(queryRows(`
+    SELECT nodes.id, nodes.user_id, nodes.parent_id, nodes.name, nodes.kind,
+      0 AS direct_item_count, nodes.created_at, nodes.updated_at
+    FROM nodes
+    WHERE nodes.id = ${sql(folderId)} AND nodes.user_id = ${sql(userId)} AND nodes.kind = ${sql("folder")}
+    LIMIT 1;
+  `));
+
+  return row === null ? null : mapFolder(row);
+}
+
+export function listFolderAncestors(folderId: string, userId: string): Array<Folder> {
+  return queryRows(`
+    WITH RECURSIVE ancestors(id, user_id, parent_id, name, kind, created_at, updated_at, depth) AS (
+      SELECT id, user_id, parent_id, name, kind, created_at, updated_at, 0
+      FROM nodes
+      WHERE id = ${sql(folderId)} AND user_id = ${sql(userId)} AND kind = ${sql("folder")}
+      UNION ALL
+      SELECT nodes.id, nodes.user_id, nodes.parent_id, nodes.name, nodes.kind,
+        nodes.created_at, nodes.updated_at, ancestors.depth + 1
+      FROM nodes
+      JOIN ancestors ON ancestors.parent_id = nodes.id
+      WHERE nodes.user_id = ${sql(userId)} AND nodes.kind = ${sql("folder")}
+    )
+    SELECT id, user_id, parent_id, name, kind, 0 AS direct_item_count, created_at, updated_at
+    FROM ancestors
+    ORDER BY depth DESC;
+  `).map(mapFolder);
+}
+
+export function createFolderPath(userId: string, segments: ReadonlyArray<string>): Folder {
+  let parentId: string | null = null;
+  let folder: Folder | null = null;
+
+  for (const name of segments) {
+    folder = findSiblingFolder(userId, parentId, name);
+
+    if (folder === null) {
+      const timestamp = nowIso();
+      const folderId = globalThis.crypto.randomUUID();
+      executeSql(`
+        INSERT INTO nodes (id, user_id, parent_id, name, kind, created_at, updated_at)
+        VALUES (${sql(folderId)}, ${sql(userId)}, ${sql(parentId)}, ${sql(name)}, ${sql("folder")}, ${sql(timestamp)}, ${sql(timestamp)});
+      `);
+      folder = findFolderForUser(folderId, userId);
+    }
+
+    if (folder === null) {
+      throw new Error("Newly created folder could not be found.");
+    }
+
+    parentId = folder.id;
+  }
+
+  if (folder === null) {
+    throw new Error("Folder path must include at least one segment.");
+  }
+
+  return folder;
+}
+
+export function renameFolder(folderId: string, userId: string, name: string): "renamed" | "not-found" | "duplicate" {
+  const folder = findFolderForUser(folderId, userId);
+
+  if (folder === null) {
+    return "not-found";
+  }
+
+  const duplicate = findSiblingFolder(userId, folder.parentId, name);
+
+  if (duplicate !== null && duplicate.id !== folder.id) {
+    return "duplicate";
+  }
+
+  executeSql(`
+    UPDATE nodes
+    SET name = ${sql(name)}, updated_at = ${sql(nowIso())}
+    WHERE id = ${sql(folder.id)} AND user_id = ${sql(userId)};
+  `);
+  return "renamed";
+}
+
+export function deleteEmptyLeafFolder(folderId: string, userId: string): "deleted" | "not-found" | "not-empty" {
+  const folder = findFolderForUser(folderId, userId);
+
+  if (folder === null) {
+    return "not-found";
+  }
+
+  const row = firstRow(queryRows(`
+    SELECT
+      EXISTS(SELECT 1 FROM items WHERE node_id = ${sql(folder.id)}) AS has_items,
+      EXISTS(SELECT 1 FROM nodes WHERE parent_id = ${sql(folder.id)}) AS has_children;
+  `));
+
+  if (row === null || getRequiredBoolean(row, "has_items") || getRequiredBoolean(row, "has_children")) {
+    return "not-empty";
+  }
+
+  executeSql(`DELETE FROM nodes WHERE id = ${sql(folder.id)} AND user_id = ${sql(userId)};`);
+  return "deleted";
 }
 
 export function findItemForUser(itemId: string, userId: string): Item | null {
@@ -523,23 +692,23 @@ export function listItemStatusChanges(itemId: string, userId: string): Array<Ite
   `).map(mapItemStatusChange);
 }
 
-export function createTodoItem(userId: string, title: string | null, body: string): Item {
+export function createTodoItem(userId: string, title: string | null, body: string, nodeId: string | null = null): Item {
   const defaultStatus = findDefaultStatus(userId);
 
-  if (defaultStatus === null) {
+  if (defaultStatus === null || (nodeId !== null && findFolderForUser(nodeId, userId) === null)) {
     throw new Error("User does not have a default status.");
   }
 
   const timestamp = nowIso();
   const itemId = globalThis.crypto.randomUUID();
-  const todoRank = generateTopTodoRank(userId);
+  const todoRank = generateTopTodoRank(userId, nodeId);
   executeSql(`
     BEGIN IMMEDIATE;
     INSERT INTO items (
       id, user_id, node_id, status_id, kind, title, body, source_capture_id, status_changed_at,
       todo_rank, todo_rank_changed_at, created_at, updated_at
     ) VALUES (
-      ${sql(itemId)}, ${sql(userId)}, NULL, ${sql(defaultStatus.id)}, ${sql(ITEM_KIND)}, ${sql(title)}, ${sql(body)},
+      ${sql(itemId)}, ${sql(userId)}, ${sql(nodeId)}, ${sql(defaultStatus.id)}, ${sql(ITEM_KIND)}, ${sql(title)}, ${sql(body)},
       NULL, ${sql(timestamp)}, ${sql(todoRank)}, NULL, ${sql(timestamp)}, ${sql(timestamp)}
     );
     INSERT INTO item_status_changes (id, item_id, from_status_id, to_status_id, note, changed_at)
@@ -575,11 +744,10 @@ export function changeItemStatus(itemId: string, userId: string, statusId: strin
   }
 
   const timestamp = nowIso();
-  const todoRank = status.showInTodoView ? generateTopTodoRank(userId) : null;
   executeSql(`
     BEGIN IMMEDIATE;
     UPDATE items
-    SET status_id = ${sql(status.id)}, status_changed_at = ${sql(timestamp)}, todo_rank = ${sql(todoRank)}, updated_at = ${sql(timestamp)}
+    SET status_id = ${sql(status.id)}, status_changed_at = ${sql(timestamp)}, updated_at = ${sql(timestamp)}
     WHERE id = ${sql(item.id)} AND user_id = ${sql(userId)};
     INSERT INTO item_status_changes (id, item_id, from_status_id, to_status_id, note, changed_at)
     VALUES (${sql(globalThis.crypto.randomUUID())}, ${sql(item.id)}, ${sql(item.statusId)}, ${sql(status.id)}, ${sql(note)}, ${sql(timestamp)});
@@ -589,8 +757,31 @@ export function changeItemStatus(itemId: string, userId: string, statusId: strin
   return true;
 }
 
-export function moveVisibleTodoItem(userId: string, itemId: string, direction: "up" | "down"): boolean {
-  const items = listVisibleTodoItems(userId);
+export function moveTodoItemToLocation(itemId: string, userId: string, nodeId: string | null): boolean {
+  const item = findItemForUser(itemId, userId);
+
+  if (item === null || (nodeId !== null && findFolderForUser(nodeId, userId) === null)) {
+    return false;
+  }
+
+  const timestamp = nowIso();
+  executeSql(`
+    UPDATE items
+    SET node_id = ${sql(nodeId)}, todo_rank = ${sql(generateTopTodoRank(userId, nodeId))},
+      todo_rank_changed_at = ${sql(timestamp)}, updated_at = ${sql(timestamp)}
+    WHERE id = ${sql(item.id)} AND user_id = ${sql(userId)};
+  `);
+  return true;
+}
+
+export function moveVisibleTodoItem(
+  userId: string,
+  itemId: string,
+  direction: "up" | "down",
+  nodeId: string | null = null,
+  statusIds: ReadonlyArray<string> | null = null,
+): boolean {
+  const items = statusIds === null ? listVisibleTodoItems(userId) : listTodoItems(userId, nodeId, statusIds);
   const currentIndex = items.findIndex((item) => item.id === itemId);
 
   if (currentIndex === -1) {
@@ -609,11 +800,16 @@ export function moveVisibleTodoItem(userId: string, itemId: string, direction: "
     movedId: itemId,
     previousId: withoutMoved[insertionIndex - 1]?.id ?? null,
     nextId: withoutMoved[insertionIndex]?.id ?? null,
-  });
+  }, nodeId, statusIds);
 }
 
-export function reorderVisibleTodoItem(userId: string, input: ReorderItemInput): boolean {
-  const items = listVisibleTodoItems(userId);
+export function reorderVisibleTodoItem(
+  userId: string,
+  input: ReorderItemInput,
+  nodeId: string | null = null,
+  statusIds: ReadonlyArray<string> | null = null,
+): boolean {
+  const items = statusIds === null ? listVisibleTodoItems(userId) : listTodoItems(userId, nodeId, statusIds);
   const movedItem = items.find((item) => item.id === input.movedId);
 
   if (movedItem === undefined || input.previousId === input.movedId || input.nextId === input.movedId) {
@@ -701,9 +897,65 @@ function findStatusForUser(statusId: string, userId: string): Status | null {
   return row === null ? null : mapStatus(row);
 }
 
-function generateTopTodoRank(userId: string): string {
-  const firstItem = listVisibleTodoItems(userId)[0];
-  return generateKeyBetween(null, firstItem?.todoRank ?? null);
+function findSiblingFolder(userId: string, parentId: string | null, name: string): Folder | null {
+  const row = firstRow(queryRows(`
+    SELECT nodes.id, nodes.user_id, nodes.parent_id, nodes.name, nodes.kind,
+      0 AS direct_item_count, nodes.created_at, nodes.updated_at
+    FROM nodes
+    WHERE nodes.user_id = ${sql(userId)}
+      AND ${nodeCondition("nodes.parent_id", parentId)}
+      AND nodes.name = ${sql(name)} COLLATE NOCASE
+      AND nodes.kind = ${sql("folder")}
+    LIMIT 1;
+  `));
+
+  return row === null ? null : mapFolder(row);
+}
+
+function generateTopTodoRank(userId: string, nodeId: string | null): string {
+  const row = firstRow(queryRows(`
+    SELECT todo_rank
+    FROM items
+    WHERE user_id = ${sql(userId)}
+      AND ${nodeCondition("node_id", nodeId)}
+      AND todo_rank IS NOT NULL
+    ORDER BY todo_rank ASC, created_at ASC
+    LIMIT 1;
+  `));
+  return generateKeyBetween(null, row === null ? null : getRequiredString(row, "todo_rank"));
+}
+
+function generateBottomTodoRank(userId: string, nodeId: string | null): string {
+  const row = firstRow(queryRows(`
+    SELECT todo_rank
+    FROM items
+    WHERE user_id = ${sql(userId)}
+      AND ${nodeCondition("node_id", nodeId)}
+      AND todo_rank IS NOT NULL
+    ORDER BY todo_rank DESC, created_at DESC
+    LIMIT 1;
+  `));
+  return generateKeyBetween(row === null ? null : getRequiredString(row, "todo_rank"), null);
+}
+
+function backfillMissingTodoRanks(): void {
+  const rows = queryRows(`
+    SELECT id, user_id, node_id
+    FROM items
+    WHERE todo_rank IS NULL
+    ORDER BY user_id ASC, COALESCE(node_id, '') ASC, created_at ASC, id ASC;
+  `);
+
+  for (const row of rows) {
+    const itemId = getRequiredString(row, "id");
+    const userId = getRequiredString(row, "user_id");
+    const nodeId = getOptionalString(row, "node_id");
+    executeSql(`
+      UPDATE items
+      SET todo_rank = ${sql(generateBottomTodoRank(userId, nodeId))}
+      WHERE id = ${sql(itemId)} AND todo_rank IS NULL;
+    `);
+  }
 }
 
 function findInsertionNeighbors(
@@ -737,6 +989,14 @@ function itemSelect(): string {
     items.todo_rank, items.todo_rank_changed_at, items.created_at, items.updated_at
     FROM items
     JOIN statuses ON statuses.id = items.status_id`;
+}
+
+function nodeCondition(column: string, nodeId: string | null): string {
+  return nodeId === null ? `${column} IS NULL` : `${column} = ${sql(nodeId)}`;
+}
+
+function sqlList(values: ReadonlyArray<string>): string {
+  return values.map((value) => sql(value)).join(", ");
 }
 
 function executeSql(statement: string): void {
@@ -852,6 +1112,19 @@ function mapStatus(row: UnknownRecord): Status {
   };
 }
 
+function mapFolder(row: UnknownRecord): Folder {
+  return {
+    id: getRequiredString(row, "id"),
+    userId: getRequiredString(row, "user_id"),
+    parentId: getOptionalString(row, "parent_id"),
+    name: getRequiredString(row, "name"),
+    kind: getRequiredString(row, "kind"),
+    directItemCount: getRequiredNumber(row, "direct_item_count"),
+    createdAt: getRequiredString(row, "created_at"),
+    updatedAt: getRequiredString(row, "updated_at"),
+  };
+}
+
 function mapItem(row: UnknownRecord): Item {
   const statusCategory = getRequiredString(row, "status_category");
 
@@ -929,4 +1202,14 @@ function getRequiredBoolean(row: UnknownRecord, key: string): boolean {
   }
 
   return value === 1;
+}
+
+function getRequiredNumber(row: UnknownRecord, key: string): number {
+  const value = row[key];
+
+  if (typeof value !== "number") {
+    throw new Error(`Expected ${key} to be a number.`);
+  }
+
+  return value;
 }

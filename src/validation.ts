@@ -24,6 +24,11 @@ export type ReorderInput = {
   readonly nextId: string | null;
 };
 
+export type LocationInput = {
+  readonly folderId: string | null;
+  readonly folderPathSegments: ReadonlyArray<string> | null;
+};
+
 export type CaptureInput = {
   readonly clientCaptureId: string;
   readonly text: string;
@@ -35,6 +40,7 @@ const MAX_EMAIL_LENGTH = 254;
 const MAX_TITLE_LENGTH = 160;
 const MAX_BODY_LENGTH = 10_000;
 const MAX_STATUS_NOTE_LENGTH = 2_000;
+const MAX_FOLDER_NAME_LENGTH = 160;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/u;
 const CAPTURE_KEYS = new Set(["client_capture_id", "text", "captured_at", "metadata"]);
@@ -103,6 +109,63 @@ export function validateStatusChangeInput(
   }
 
   return { ok: true, value: { statusId: rawStatusId.trim(), note } };
+}
+
+export function validateFolderPath(rawPath: string | null): ValidationResult<ReadonlyArray<string>> {
+  if (rawPath === null || rawPath.trim().length === 0) {
+    return { ok: false, message: "Enter a folder path." };
+  }
+
+  const segments = rawPath.split("/").map((segment) => segment.trim());
+
+  if (segments.some((segment) => segment.length === 0)) {
+    return { ok: false, message: "Folder paths cannot contain blank segments." };
+  }
+
+  for (const segment of segments) {
+    const nameResult = validateFolderName(segment);
+
+    if (!nameResult.ok) {
+      return nameResult;
+    }
+  }
+
+  return { ok: true, value: segments };
+}
+
+export function validateFolderName(rawName: string | null): ValidationResult<string> {
+  if (rawName === null || rawName.trim().length === 0) {
+    return { ok: false, message: "Folder name is required." };
+  }
+
+  const name = rawName.trim();
+
+  if (name.includes("/")) {
+    return { ok: false, message: "Folder names cannot contain slash characters." };
+  }
+
+  if (name.length > MAX_FOLDER_NAME_LENGTH) {
+    return { ok: false, message: "Folder names must be 160 characters or fewer." };
+  }
+
+  return { ok: true, value: name };
+}
+
+export function validateLocationInput(
+  rawFolderId: string | null,
+  rawFolderPath: string | null,
+): ValidationResult<LocationInput> {
+  const folderId = normalizeOptionalText(rawFolderId);
+  const folderPath = normalizeOptionalText(rawFolderPath);
+
+  if (folderPath === null) {
+    return { ok: true, value: { folderId, folderPathSegments: null } };
+  }
+
+  const pathResult = validateFolderPath(folderPath);
+  return pathResult.ok
+    ? { ok: true, value: { folderId: null, folderPathSegments: pathResult.value } }
+    : pathResult;
 }
 
 export function validateReorderInput(value: unknown): ValidationResult<ReorderInput> {

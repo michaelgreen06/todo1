@@ -86,21 +86,54 @@ brew install railway
 railway login
 ```
 
-Link this directory to the target Railway project and service:
+This directory is already linked to the `todo1` Railway project and service.
+Confirm the current link any time with:
+
+```bash
+railway status
+```
+
+Link this directory to the target Railway project and service if needed:
 
 ```bash
 cd /Users/michaelgreen/dev_stuff/voice-agent/todo1
 railway link
 ```
 
-Deploy your own code from this directory:
+### Daily deploy workflow
+
+Deploys are done from the current local worktree, so uncommitted local changes
+are included in the upload.
+
+Run checks first:
 
 ```bash
-railway up
+npm run check
+npm test
+```
+
+Deploy the current code from this directory:
+
+```bash
+railway up --service todo1
 ```
 
 `railway deploy` is for templates such as Postgres. For your app code, use
 `railway up`.
+
+Watch the deploy and verify it:
+
+```bash
+railway status
+railway logs
+curl -i https://todo.michaelgreen06.com/healthz
+```
+
+Production URL:
+
+```text
+https://todo.michaelgreen06.com
+```
 
 ### Remote volume
 
@@ -122,7 +155,7 @@ Set the deployment variables on the service:
 
 ```bash
 railway variable set HOST=0.0.0.0
-railway variable set PUBLIC_BASE_URL=https://<your-domain>
+railway variable set PUBLIC_BASE_URL=https://todo.michaelgreen06.com
 railway variable set TODO_DATABASE_PATH=/data/todo.sqlite
 ```
 
@@ -144,7 +177,7 @@ railway domain
 Add a custom domain later:
 
 ```bash
-railway domain todo.example.com
+railway domain todo.michaelgreen06.com --service todo1
 ```
 
 Railway will print the DNS records you must add.
