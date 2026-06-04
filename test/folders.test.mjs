@@ -177,6 +177,82 @@ test("folder hierarchy and inbox", async (suite) => {
     });
   });
 
+  await suite.test("changes status through shared form endpoint with long notes", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("status-form@example.com");
+      const statuses = listStatuses(user.id);
+      const activeId = requiredStatusId(statuses, "Active");
+      const completedId = requiredStatusId(statuses, "Completed");
+      const item = createTodoItem(user.id, "Archive docs", "Check IDrive backup");
+      const cookie = createSessionCookie(user.id);
+      const note = "Here is a quick summary of my file storage situation: all of my files are backed up to idrive. I am happy w/ 320/500gb.";
+
+      const response = await sendRequest({
+        method: "POST",
+        url: "/todos/status",
+        headers: { cookie },
+        body: `itemId=${encodeURIComponent(item.id)}&statusId=${encodeURIComponent(completedId)}&note=${encodeURIComponent(note)}&returnTo=${encodeURIComponent(`/?status=${activeId}`)}`,
+      });
+
+      assert.equal(response.statusCode, 303);
+      assert.equal(response.headers.Location, `/?status=${activeId}`);
+      assert.deepEqual(listTodoItems(user.id, null, [completedId]).map((todo) => todo.id), [item.id]);
+    });
+  });
+
+  await suite.test("moves multiple selected items to a new location through bulk endpoint", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("bulk-move@example.com");
+      const activeId = statusId(user.id, "Active");
+      const first = createTodoItem(user.id, "First bulk", "First body");
+      const second = createTodoItem(user.id, "Second bulk", "Second body");
+      const unselected = createTodoItem(user.id, "Stay inbox", "Stay body");
+      const cookie = createSessionCookie(user.id);
+
+      const response = await sendRequest({
+        method: "POST",
+        url: "/todos/bulk/location",
+        headers: { cookie },
+        body: `itemId=${encodeURIComponent(first.id)}&itemId=${encodeURIComponent(second.id)}&folderPath=Projects+%2F+Bulk&returnTo=${encodeURIComponent(`/?status=${activeId}`)}`,
+      });
+
+      assert.equal(response.statusCode, 303);
+      assert.equal(response.headers.Location, `/?status=${activeId}`);
+      const bulkFolder = listFolders(user.id, [activeId]).find((folder) => folder.name === "Bulk");
+      assert.notEqual(bulkFolder, undefined);
+      assert.deepEqual(
+        listTodoItems(user.id, bulkFolder.id, [activeId]).map((todo) => todo.id).sort(),
+        [first.id, second.id].sort(),
+      );
+      assert.deepEqual(listTodoItems(user.id, null, [activeId]).map((todo) => todo.id), [unselected.id]);
+    });
+  });
+
+  await suite.test("rejects bulk move with another user's item before creating folders", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const owner = findOrCreateUserByEmail("bulk-owner@example.com");
+      const intruder = findOrCreateUserByEmail("bulk-intruder@example.com");
+      const ownerItem = createTodoItem(owner.id, "Owner only", "Owner body");
+      const intruderItem = createTodoItem(intruder.id, "Intruder item", "Intruder body");
+      const activeId = statusId(intruder.id, "Active");
+      const cookie = createSessionCookie(intruder.id);
+
+      const response = await sendRequest({
+        method: "POST",
+        url: "/todos/bulk/location",
+        headers: { cookie },
+        body: `itemId=${encodeURIComponent(intruderItem.id)}&itemId=${encodeURIComponent(ownerItem.id)}&folderPath=Should+Not+Exist&returnTo=${encodeURIComponent(`/?status=${activeId}`)}`,
+      });
+
+      assert.equal(response.statusCode, 404);
+      assert.deepEqual(listFolders(intruder.id, []), []);
+      assert.deepEqual(listTodoItems(intruder.id, null, [activeId]).map((todo) => todo.id), [intruderItem.id]);
+    });
+  });
+
   await suite.test("renders default Active filter and preserves multi-status folder navigation", async () => {
     await withDatabaseAsync(async () => {
       initializeDatabase();

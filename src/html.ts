@@ -246,7 +246,14 @@ function renderTodoList(options: TodoPageOptions): string {
     return `<p class="empty-state">No matching items in this location.</p>`;
   }
 
-  return `<ul class="todo-list" data-todo-list>${options.todos.map((todo, index) => renderTodoCard(todo, index, options)).join("")}</ul>`;
+  return `
+    <div class="bulk-actions" data-bulk-actions>
+      <label><input type="checkbox" data-select-all-todos> Select all</label>
+      <p class="bulk-count"><span data-selected-todo-count>0</span> selected</p>
+      <button type="button" class="secondary" data-open-bulk-move-dialog disabled>Move selected</button>
+    </div>
+    <ul class="todo-list" data-todo-list>${options.todos.map((todo, index) => renderTodoCard(todo, index, options)).join("")}</ul>
+  `;
 }
 
 function renderTodoCard(todo: Item, index: number, options: TodoPageOptions): string {
@@ -256,6 +263,10 @@ function renderTodoCard(todo: Item, index: number, options: TodoPageOptions): st
 
   return `
     <li class="todo-card" data-todo-id="${escapeAttribute(todo.id)}" data-text-expanded="false">
+      <label class="todo-select">
+        <input type="checkbox" value="${escapeAttribute(todo.id)}" data-select-todo aria-label="Select ${escapeAttribute(primaryText)}">
+        <span>Select</span>
+      </label>
       <button class="drag-handle" type="button" data-drag-handle aria-label="Drag to reorder ${escapeAttribute(primaryText)}">Grip</button>
       <article aria-labelledby="todo-${escapeAttribute(todo.id)}-heading">
         <div class="todo-summary">
@@ -317,7 +328,8 @@ function renderStatusDialog(statuses: ReadonlyArray<Status>, returnTo: string): 
       <section class="panel panel-edit">
         <div class="modal-heading"><h1 id="status-dialog-heading">Change status</h1><button type="button" class="secondary" data-close-status-dialog>Close</button></div>
         <p class="muted" data-status-item-label></p>
-        <form method="post" class="stack" data-status-form>
+        <form action="/todos/status" method="post" class="stack" data-status-form>
+          ${renderHidden("itemId", "")}
           ${renderHidden("returnTo", returnTo)}
           <label for="statusId">Status</label>
           <select id="statusId" name="statusId" required>${statuses.map((status) => `<option value="${escapeAttribute(status.id)}">${escapeHtml(status.name)}</option>`).join("")}</select>
@@ -334,15 +346,16 @@ function renderMoveDialog(folders: ReadonlyArray<Folder>, returnTo: string): str
   return `
     <dialog class="modal-shell" data-move-dialog aria-labelledby="move-dialog-heading">
       <section class="panel panel-edit">
-        <div class="modal-heading"><h1 id="move-dialog-heading">Move item</h1><button type="button" class="secondary" data-close-move-dialog>Close</button></div>
+        <div class="modal-heading"><h1 id="move-dialog-heading" data-move-heading>Move item</h1><button type="button" class="secondary" data-close-move-dialog>Close</button></div>
         <p class="muted" data-move-item-label></p>
         <form method="post" class="stack" data-move-form>
           ${renderHidden("returnTo", returnTo)}
+          <span data-move-selected-items></span>
           <label for="move-folder-id">Existing location</label>
           <select id="move-folder-id" name="folderId"><option value="">Inbox</option>${renderFolderOptions(folders, null)}</select>
           <label for="folderPath">Or create absolute folder path <span class="muted">(optional)</span></label>
           <input id="folderPath" name="folderPath" type="text" placeholder="Errands / Costco">
-          <div class="button-row"><button type="submit">Move item</button><button type="button" class="secondary" data-close-move-dialog>Cancel</button></div>
+          <div class="button-row"><button type="submit" data-move-submit>Move item</button><button type="button" class="secondary" data-close-move-dialog>Cancel</button></div>
         </form>
       </section>
     </dialog>
@@ -408,7 +421,7 @@ function escapeAttribute(value: string): string {
 
 function renderStyles(): string {
   return `
-    :root{--ink:#18211b;--muted:#667167;--panel:#fffdf7;--accent:#1f7a4d;--accent-dark:#155936;--danger:#a8322a;--line:#ded4bd;--shadow:0 20px 60px rgba(38,32,20,.16);font-family:ui-rounded,"Avenir Next","Trebuchet MS",sans-serif;color:var(--ink)}*{box-sizing:border-box}body{min-height:100vh;margin:0;background:radial-gradient(circle at top left,rgba(31,122,77,.2),transparent 32rem),linear-gradient(135deg,#fff8e8,#eaf2df)}a{color:var(--accent-dark);font-weight:700}button,.button-link{min-height:2.6rem;border:0;border-radius:999px;padding:.7rem 1rem;color:white;background:var(--accent);font:inherit;font-weight:800;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}button:hover,.button-link:hover{background:var(--accent-dark)}button:disabled{cursor:not-allowed;opacity:.45}.secondary{background:#eef3e6;color:var(--ink)}.danger{background:var(--danger)}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:1rem;padding:.8rem 1rem;background:white;color:var(--ink);font:inherit}label,legend{font-weight:800}.auth-shell{min-height:100vh;display:grid;place-items:center;width:min(64rem,calc(100% - 2rem));margin:auto}.topbar,.workspace{width:min(76rem,calc(100% - 2rem));margin:auto}.topbar{padding:1rem 0;display:flex;justify-content:space-between;align-items:center}.workspace{display:grid;grid-template-columns:17rem minmax(0,1fr);gap:1rem;padding-bottom:2rem}.panel{border:1px solid rgba(222,212,189,.85);border-radius:1.5rem;padding:1.2rem;background:rgba(255,253,247,.94);box-shadow:var(--shadow)}.panel-edit{width:min(42rem,100%)}.stack{display:grid;gap:.65rem}.eyebrow,.muted{color:var(--muted)}.eyebrow,.user-email{margin:0}.eyebrow{font-size:.75rem;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.user-email{font-weight:900}.sidebar h2{margin-top:0}.folder-link{display:flex;justify-content:space-between;gap:.5rem;padding:.45rem .55rem;border-radius:.65rem;text-decoration:none}.folder-link.selected{background:#dff1df}.folder-tree,.folder-tree ul{list-style:none;padding-left:.85rem;margin:.25rem 0}.folder-tree{padding-left:0}.folder-tree summary{cursor:pointer}.folder-tree summary::marker{color:var(--muted)}.folder-tree summary .folder-link{display:inline-flex;width:calc(100% - 1rem)}.folder-create{margin-top:1.2rem}.main-column{min-width:0}.breadcrumbs ol{display:flex;flex-wrap:wrap;gap:.4rem;list-style:none;padding:0;margin:.2rem 0 .8rem}.breadcrumbs li+li::before{content:"/";padding-right:.4rem;color:var(--muted)}.list-heading,.button-row,.modal-heading{display:flex;align-items:center;justify-content:space-between;gap:.8rem}.list-heading h1{margin:.15rem 0}.filter-form{display:flex;align-items:end;gap:1rem;padding:.8rem 0;border-bottom:1px solid var(--line)}.filter-form fieldset{display:flex;flex-wrap:wrap;gap:.7rem;border:0;padding:0;margin:0}.filter-form legend{margin-bottom:.4rem}.filter-form input{width:auto}.folder-controls{padding:.8rem 0;border-bottom:1px solid var(--line)}.folder-control-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;padding-top:.7rem}.todo-list{display:grid;gap:.8rem;padding:0;margin:1rem 0 0;list-style:none;min-width:0}.todo-card{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.75rem;padding:1rem;border:1px solid var(--line);border-radius:1.15rem;background:white;min-width:0}.todo-card article{min-width:0}.drag-handle{align-self:start;min-height:auto;padding:.5rem .65rem;background:#f1eadb;color:var(--muted);cursor:grab;touch-action:none}.todo-summary{display:flex;align-items:start;justify-content:space-between;gap:.8rem}.todo-heading-group{min-width:0;flex:1}.todo-title,.todo-description{overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-box-orient:vertical;overflow-wrap:anywhere}.todo-title{-webkit-line-clamp:1;margin:.15rem 0;font-size:1.2rem}.todo-description{-webkit-line-clamp:1;margin:.35rem 0 0;line-height:1.5}.todo-card[data-text-expanded="true"] .todo-title,.todo-card[data-text-expanded="true"] .todo-description{display:block;overflow:visible;text-overflow:clip;-webkit-line-clamp:unset}.todo-toggle{flex-shrink:0;min-height:2.2rem;padding:.45rem .8rem;font-size:.88rem}.status-pill{margin:0;color:var(--muted);font-size:.78rem;font-weight:900;text-transform:uppercase}.todo-actions{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center;margin-top:.7rem}.todo-actions button,.todo-actions a{min-height:2.2rem;padding:.45rem .7rem;font-size:.88rem}.empty-state{color:var(--muted);font-weight:700}.notice{border-radius:1rem;padding:.75rem 1rem;font-weight:800}.success{background:#dff1df}.error{background:#ffe1dc;color:#731d18}.modal-shell{width:min(44rem,calc(100% - 1rem));max-width:none;border:0;padding:0;background:transparent}.modal-shell::backdrop{background:rgba(24,33,27,.32);backdrop-filter:blur(.25rem)}.status-history{margin-top:2rem}.status-history p{margin:.2rem 0}.status-history time{color:var(--muted);font-size:.9rem}.mobile-location{display:none}
+    :root{--ink:#18211b;--muted:#667167;--panel:#fffdf7;--accent:#1f7a4d;--accent-dark:#155936;--danger:#a8322a;--line:#ded4bd;--shadow:0 20px 60px rgba(38,32,20,.16);font-family:ui-rounded,"Avenir Next","Trebuchet MS",sans-serif;color:var(--ink)}*{box-sizing:border-box}body{min-height:100vh;margin:0;background:radial-gradient(circle at top left,rgba(31,122,77,.2),transparent 32rem),linear-gradient(135deg,#fff8e8,#eaf2df)}a{color:var(--accent-dark);font-weight:700}button,.button-link{min-height:2.6rem;border:0;border-radius:999px;padding:.7rem 1rem;color:white;background:var(--accent);font:inherit;font-weight:800;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}button:hover,.button-link:hover{background:var(--accent-dark)}button:disabled{cursor:not-allowed;opacity:.45}.secondary{background:#eef3e6;color:var(--ink)}.danger{background:var(--danger)}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:1rem;padding:.8rem 1rem;background:white;color:var(--ink);font:inherit}label,legend{font-weight:800}.auth-shell{min-height:100vh;display:grid;place-items:center;width:min(64rem,calc(100% - 2rem));margin:auto}.topbar,.workspace{width:min(76rem,calc(100% - 2rem));margin:auto}.topbar{padding:1rem 0;display:flex;justify-content:space-between;align-items:center}.workspace{display:grid;grid-template-columns:17rem minmax(0,1fr);gap:1rem;padding-bottom:2rem}.panel{border:1px solid rgba(222,212,189,.85);border-radius:1.5rem;padding:1.2rem;background:rgba(255,253,247,.94);box-shadow:var(--shadow)}.panel-edit{width:min(42rem,100%)}.stack{display:grid;gap:.65rem}.eyebrow,.muted{color:var(--muted)}.eyebrow,.user-email{margin:0}.eyebrow{font-size:.75rem;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.user-email{font-weight:900}.sidebar h2{margin-top:0}.folder-link{display:flex;justify-content:space-between;gap:.5rem;padding:.45rem .55rem;border-radius:.65rem;text-decoration:none}.folder-link.selected{background:#dff1df}.folder-tree,.folder-tree ul{list-style:none;padding-left:.85rem;margin:.25rem 0}.folder-tree{padding-left:0}.folder-tree summary{cursor:pointer}.folder-tree summary::marker{color:var(--muted)}.folder-tree summary .folder-link{display:inline-flex;width:calc(100% - 1rem)}.folder-create{margin-top:1.2rem}.main-column{min-width:0}.breadcrumbs ol{display:flex;flex-wrap:wrap;gap:.4rem;list-style:none;padding:0;margin:.2rem 0 .8rem}.breadcrumbs li+li::before{content:"/";padding-right:.4rem;color:var(--muted)}.list-heading,.button-row,.modal-heading{display:flex;align-items:center;justify-content:space-between;gap:.8rem}.list-heading h1{margin:.15rem 0}.filter-form{display:flex;align-items:end;gap:1rem;padding:.8rem 0;border-bottom:1px solid var(--line)}.filter-form fieldset{display:flex;flex-wrap:wrap;gap:.7rem;border:0;padding:0;margin:0}.filter-form legend{margin-bottom:.4rem}.filter-form input{width:auto}.folder-controls{padding:.8rem 0;border-bottom:1px solid var(--line)}.folder-control-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;padding-top:.7rem}.bulk-actions{display:flex;flex-wrap:wrap;align-items:center;gap:.7rem;padding:.8rem 0;border-bottom:1px solid var(--line)}.bulk-actions input,.todo-select input{width:auto}.bulk-count{margin:0;color:var(--muted);font-weight:900}.todo-list{display:grid;gap:.8rem;padding:0;margin:1rem 0 0;list-style:none;min-width:0}.todo-card{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:.75rem;padding:1rem;border:1px solid var(--line);border-radius:1.15rem;background:white;min-width:0}.todo-card article{min-width:0}.todo-select{display:grid;justify-items:center;gap:.25rem;align-self:start;color:var(--muted);font-size:.78rem}.drag-handle{align-self:start;min-height:auto;padding:.5rem .65rem;background:#f1eadb;color:var(--muted);cursor:grab;touch-action:none}.todo-summary{display:flex;align-items:start;justify-content:space-between;gap:.8rem}.todo-heading-group{min-width:0;flex:1}.todo-title,.todo-description{overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-box-orient:vertical;overflow-wrap:anywhere}.todo-title{-webkit-line-clamp:1;margin:.15rem 0;font-size:1.2rem}.todo-description{-webkit-line-clamp:1;margin:.35rem 0 0;line-height:1.5}.todo-card[data-text-expanded="true"] .todo-title,.todo-card[data-text-expanded="true"] .todo-description{display:block;overflow:visible;text-overflow:clip;-webkit-line-clamp:unset}.todo-toggle{flex-shrink:0;min-height:2.2rem;padding:.45rem .8rem;font-size:.88rem}.status-pill{margin:0;color:var(--muted);font-size:.78rem;font-weight:900;text-transform:uppercase}.todo-actions{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center;margin-top:.7rem}.todo-actions button,.todo-actions a{min-height:2.2rem;padding:.45rem .7rem;font-size:.88rem}.empty-state{color:var(--muted);font-weight:700}.notice{border-radius:1rem;padding:.75rem 1rem;font-weight:800}.success{background:#dff1df}.error{background:#ffe1dc;color:#731d18}.modal-shell{width:min(44rem,calc(100% - 1rem));max-width:none;border:0;padding:0;background:transparent}.modal-shell::backdrop{background:rgba(24,33,27,.32);backdrop-filter:blur(.25rem)}.status-history{margin-top:2rem}.status-history p{margin:.2rem 0}.status-history time{color:var(--muted);font-size:.9rem}.mobile-location{display:none}
     @media(max-width:760px){.workspace{display:block}.sidebar{display:none}.mobile-location{display:grid;grid-template-columns:1fr auto;gap:.5rem;margin-bottom:.8rem}.mobile-location label{grid-column:1/-1}.topbar,.list-heading,.button-row,.modal-heading,.filter-form{align-items:stretch;flex-direction:column}.folder-control-grid{grid-template-columns:1fr}.todo-card{grid-template-columns:1fr;width:100%}.todo-summary{align-items:stretch;flex-direction:column}.drag-handle,.todo-toggle{width:fit-content;max-width:100%}}
   `;
 }
@@ -421,12 +434,225 @@ function renderClientScript(options: TodoPageOptions): string {
 
   return `
     <script>
-      const list=document.querySelector("[data-todo-list]");
-      document.querySelectorAll("[data-toggle-todo]").forEach((button)=>button.addEventListener("click",()=>{if(!(button instanceof HTMLButtonElement))return;const card=button.closest("[data-todo-id]");if(!(card instanceof HTMLElement))return;const isExpanded=button.getAttribute("aria-expanded")==="true";button.setAttribute("aria-expanded",String(!isExpanded));button.textContent=isExpanded?"Expand":"Collapse";card.dataset.textExpanded=String(!isExpanded)}));
-      function wireDialog(name,actionSuffix){const dialog=document.querySelector("[data-"+name+"-dialog]");const form=document.querySelector("[data-"+name+"-form]");const label=document.querySelector("[data-"+name+"-item-label]");document.querySelectorAll("[data-open-"+name+"-dialog]").forEach((button)=>button.addEventListener("click",()=>{if(!(dialog instanceof HTMLDialogElement)||!(form instanceof HTMLFormElement)||!(button instanceof HTMLButtonElement))return;form.action="/todos/"+encodeURIComponent(button.dataset.itemId||"")+"/"+actionSuffix;if(label)label.textContent=button.dataset.itemLabel||"";if(name==="move"){const select=document.querySelector("#move-folder-id");if(select instanceof HTMLSelectElement)select.value=button.dataset.folderId||"";}dialog.showModal()}));document.querySelectorAll("[data-close-"+name+"-dialog]").forEach((button)=>button.addEventListener("click",()=>{if(dialog instanceof HTMLDialogElement)dialog.close()}))}
-      wireDialog("status","status");wireDialog("move","location");
-      const createDialog=document.querySelector("[data-create-dialog]");document.querySelectorAll("[data-open-create-dialog]").forEach((button)=>button.addEventListener("click",()=>{if(createDialog instanceof HTMLDialogElement)createDialog.showModal()}));document.querySelectorAll("[data-close-create-dialog]").forEach((button)=>button.addEventListener("click",()=>{if(createDialog instanceof HTMLDialogElement)createDialog.close()}));
-      let dragging=null,pointerId=null,longPressTimer=0;function cards(){return Array.from(document.querySelectorAll("[data-todo-id]"))}function persist(card){const ordered=cards(),index=ordered.indexOf(card),previous=ordered[index-1],next=ordered[index+1];fetch(${JSON.stringify(reorderUrl)},{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({movedId:card.dataset.todoId||"",previousId:previous?previous.dataset.todoId||null:null,nextId:next?next.dataset.todoId||null:null})}).then((response)=>{if(!response.ok)location.reload()}).catch(()=>location.reload())}function afterCard(y){let closest={offset:Number.NEGATIVE_INFINITY,element:null};for(const card of cards().filter((candidate)=>candidate!==dragging)){const box=card.getBoundingClientRect(),offset=y-box.top-box.height/2;if(offset<0&&offset>closest.offset)closest={offset,element:card}}return closest.element}function finish(event){clearTimeout(longPressTimer);if(!dragging||pointerId!==event.pointerId)return;dragging.classList.remove("dragging");dragging.releasePointerCapture(event.pointerId);persist(dragging);dragging=null;pointerId=null}if(list){list.addEventListener("pointerdown",(event)=>{const handle=event.target.closest("[data-drag-handle]"),card=event.target.closest("[data-todo-id]");if(!handle||!card)return;longPressTimer=setTimeout(()=>{dragging=card;pointerId=event.pointerId;card.classList.add("dragging");card.setPointerCapture(event.pointerId)},event.pointerType==="mouse"?0:350)});list.addEventListener("pointermove",(event)=>{if(!dragging||pointerId!==event.pointerId)return;event.preventDefault();const after=afterCard(event.clientY);if(after===null)list.appendChild(dragging);else list.insertBefore(dragging,after)});list.addEventListener("pointerup",finish);list.addEventListener("pointercancel",finish)}
+      const list = document.querySelector("[data-todo-list]");
+
+      function closestElement(target, selector) {
+        return target instanceof Element ? target.closest(selector) : null;
+      }
+
+      function selectedTodoIds() {
+        return Array.from(document.querySelectorAll("[data-select-todo]"))
+          .filter((checkbox) => checkbox instanceof HTMLInputElement && checkbox.checked)
+          .map((checkbox) => checkbox.value);
+      }
+
+      function updateSelectionControls() {
+        const checkboxes = Array.from(document.querySelectorAll("[data-select-todo]"))
+          .filter((checkbox) => checkbox instanceof HTMLInputElement);
+        const selectedCount = checkboxes.filter((checkbox) => checkbox.checked).length;
+        const selectedCountLabel = document.querySelector("[data-selected-todo-count]");
+        const bulkMoveButton = document.querySelector("[data-open-bulk-move-dialog]");
+        const selectAll = document.querySelector("[data-select-all-todos]");
+
+        if (selectedCountLabel instanceof HTMLElement) selectedCountLabel.textContent = String(selectedCount);
+        if (bulkMoveButton instanceof HTMLButtonElement) bulkMoveButton.disabled = selectedCount === 0;
+        if (selectAll instanceof HTMLInputElement) {
+          selectAll.checked = checkboxes.length > 0 && selectedCount === checkboxes.length;
+          selectAll.indeterminate = selectedCount > 0 && selectedCount < checkboxes.length;
+        }
+      }
+
+      document.querySelectorAll("[data-select-todo]").forEach((checkbox) => {
+        checkbox.addEventListener("change", updateSelectionControls);
+      });
+
+      const selectAll = document.querySelector("[data-select-all-todos]");
+      if (selectAll instanceof HTMLInputElement) {
+        selectAll.addEventListener("change", () => {
+          document.querySelectorAll("[data-select-todo]").forEach((checkbox) => {
+            if (checkbox instanceof HTMLInputElement) checkbox.checked = selectAll.checked;
+          });
+          updateSelectionControls();
+        });
+      }
+
+      document.querySelectorAll("[data-toggle-todo]").forEach((button) => {
+        button.addEventListener("click", () => {
+          if (!(button instanceof HTMLButtonElement)) return;
+          const card = button.closest("[data-todo-id]");
+          if (!(card instanceof HTMLElement)) return;
+          const isExpanded = button.getAttribute("aria-expanded") === "true";
+          button.setAttribute("aria-expanded", String(!isExpanded));
+          button.textContent = isExpanded ? "Expand" : "Collapse";
+          card.dataset.textExpanded = String(!isExpanded);
+        });
+      });
+
+      const statusDialog = document.querySelector("[data-status-dialog]");
+      const statusForm = document.querySelector("[data-status-form]");
+      const statusLabel = document.querySelector("[data-status-item-label]");
+      document.querySelectorAll("[data-open-status-dialog]").forEach((button) => {
+        button.addEventListener("click", () => {
+          if (!(statusDialog instanceof HTMLDialogElement) || !(statusForm instanceof HTMLFormElement) || !(button instanceof HTMLButtonElement)) return;
+          const itemInput = statusForm.querySelector('input[name="itemId"]');
+          if (itemInput instanceof HTMLInputElement) itemInput.value = button.dataset.itemId || "";
+          if (statusLabel instanceof HTMLElement) statusLabel.textContent = button.dataset.itemLabel || "";
+          statusDialog.showModal();
+        });
+      });
+      document.querySelectorAll("[data-close-status-dialog]").forEach((button) => {
+        button.addEventListener("click", () => {
+          if (statusDialog instanceof HTMLDialogElement) statusDialog.close();
+        });
+      });
+
+      const moveDialog = document.querySelector("[data-move-dialog]");
+      const moveForm = document.querySelector("[data-move-form]");
+      const moveHeading = document.querySelector("[data-move-heading]");
+      const moveLabel = document.querySelector("[data-move-item-label]");
+      const moveSelectedItems = document.querySelector("[data-move-selected-items]");
+      const moveSubmit = document.querySelector("[data-move-submit]");
+      const moveFolderSelect = document.querySelector("#move-folder-id");
+      const moveFolderPath = document.querySelector("#folderPath");
+
+      function openMoveDialog(options) {
+        if (!(moveDialog instanceof HTMLDialogElement) || !(moveForm instanceof HTMLFormElement)) return;
+        moveForm.action = options.action;
+        if (moveHeading instanceof HTMLElement) moveHeading.textContent = options.heading;
+        if (moveLabel instanceof HTMLElement) moveLabel.textContent = options.label;
+        if (moveSubmit instanceof HTMLButtonElement) moveSubmit.textContent = options.submitText;
+        if (moveFolderSelect instanceof HTMLSelectElement) moveFolderSelect.value = options.folderId;
+        if (moveFolderPath instanceof HTMLInputElement) moveFolderPath.value = "";
+        if (moveSelectedItems instanceof HTMLElement) {
+          moveSelectedItems.replaceChildren(...options.itemIds.map((id) => {
+            const input = document.createElement("input");
+            input.type = "hidden";
+            input.name = "itemId";
+            input.value = id;
+            return input;
+          }));
+        }
+        moveDialog.showModal();
+      }
+
+      document.querySelectorAll("[data-open-move-dialog]").forEach((button) => {
+        button.addEventListener("click", () => {
+          if (!(button instanceof HTMLButtonElement)) return;
+          openMoveDialog({
+            action: "/todos/" + encodeURIComponent(button.dataset.itemId || "") + "/location",
+            folderId: button.dataset.folderId || "",
+            heading: "Move item",
+            itemIds: [],
+            label: button.dataset.itemLabel || "",
+            submitText: "Move item",
+          });
+        });
+      });
+
+      const bulkMoveButton = document.querySelector("[data-open-bulk-move-dialog]");
+      if (bulkMoveButton instanceof HTMLButtonElement) {
+        bulkMoveButton.addEventListener("click", () => {
+          const itemIds = selectedTodoIds();
+          if (itemIds.length === 0) return;
+          openMoveDialog({
+            action: "/todos/bulk/location",
+            folderId: "",
+            heading: "Move selected items",
+            itemIds,
+            label: itemIds.length + " selected",
+            submitText: "Move selected",
+          });
+        });
+      }
+
+      document.querySelectorAll("[data-close-move-dialog]").forEach((button) => {
+        button.addEventListener("click", () => {
+          if (moveDialog instanceof HTMLDialogElement) moveDialog.close();
+        });
+      });
+
+      const createDialog = document.querySelector("[data-create-dialog]");
+      document.querySelectorAll("[data-open-create-dialog]").forEach((button) => {
+        button.addEventListener("click", () => {
+          if (createDialog instanceof HTMLDialogElement) createDialog.showModal();
+        });
+      });
+      document.querySelectorAll("[data-close-create-dialog]").forEach((button) => {
+        button.addEventListener("click", () => {
+          if (createDialog instanceof HTMLDialogElement) createDialog.close();
+        });
+      });
+
+      let dragging = null;
+      let pointerId = null;
+      let longPressTimer = 0;
+
+      function cards() {
+        return Array.from(document.querySelectorAll("[data-todo-id]"));
+      }
+
+      function persist(card) {
+        const ordered = cards();
+        const index = ordered.indexOf(card);
+        const previous = ordered[index - 1];
+        const next = ordered[index + 1];
+        fetch(${JSON.stringify(reorderUrl)}, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            movedId: card.dataset.todoId || "",
+            previousId: previous ? previous.dataset.todoId || null : null,
+            nextId: next ? next.dataset.todoId || null : null,
+          }),
+        }).then((response) => {
+          if (!response.ok) location.reload();
+        }).catch(() => location.reload());
+      }
+
+      function afterCard(y) {
+        let closest = { offset: Number.NEGATIVE_INFINITY, element: null };
+        for (const card of cards().filter((candidate) => candidate !== dragging)) {
+          const box = card.getBoundingClientRect();
+          const offset = y - box.top - box.height / 2;
+          if (offset < 0 && offset > closest.offset) closest = { offset, element: card };
+        }
+        return closest.element;
+      }
+
+      function finish(event) {
+        clearTimeout(longPressTimer);
+        if (!dragging || pointerId !== event.pointerId) return;
+        dragging.classList.remove("dragging");
+        dragging.releasePointerCapture(event.pointerId);
+        persist(dragging);
+        dragging = null;
+        pointerId = null;
+      }
+
+      if (list) {
+        list.addEventListener("pointerdown", (event) => {
+          const handle = closestElement(event.target, "[data-drag-handle]");
+          const card = closestElement(event.target, "[data-todo-id]");
+          if (!handle || !(card instanceof HTMLElement)) return;
+          longPressTimer = window.setTimeout(() => {
+            dragging = card;
+            pointerId = event.pointerId;
+            card.classList.add("dragging");
+            card.setPointerCapture(event.pointerId);
+          }, event.pointerType === "mouse" ? 0 : 350);
+        });
+        list.addEventListener("pointermove", (event) => {
+          if (!dragging || pointerId !== event.pointerId) return;
+          event.preventDefault();
+          const after = afterCard(event.clientY);
+          if (after === null) list.appendChild(dragging);
+          else list.insertBefore(dragging, after);
+        });
+        list.addEventListener("pointerup", finish);
+        list.addEventListener("pointercancel", finish);
+      }
+
+      updateSelectionControls();
     </script>
   `;
 }

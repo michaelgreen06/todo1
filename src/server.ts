@@ -165,6 +165,16 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
     return;
   }
 
+  if (method === "POST" && url.pathname === "/todos/status") {
+    await handleChangeStatusFromForm(request, response, user);
+    return;
+  }
+
+  if (method === "POST" && url.pathname === "/todos/bulk/location") {
+    await handleBulkChangeLocation(request, response, user);
+    return;
+  }
+
   const folderRoute = parseFolderRoute(url.pathname);
 
   if (folderRoute !== null) {
@@ -487,6 +497,31 @@ async function handleChangeStatus(request: IncomingMessage, response: ServerResp
   redirect(response, returnTo);
 }
 
+async function handleChangeStatusFromForm(request: IncomingMessage, response: ServerResponse, user: User): Promise<void> {
+  const form = new URLSearchParams(await readRequestBody(request));
+  const todoId = form.get("itemId");
+  const returnTo = getReturnTo(form, "/");
+
+  if (todoId === null || todoId.trim().length === 0) {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  const statusResult = validateStatusChangeInput(form.get("statusId"), form.get("note"));
+
+  if (!statusResult.ok) {
+    sendTodoPageForReturnTo(response, user, returnTo, statusResult.message);
+    return;
+  }
+
+  if (!changeItemStatus(todoId, user.id, statusResult.value.statusId, statusResult.value.note)) {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  redirect(response, returnTo);
+}
+
 async function handleChangeLocation(request: IncomingMessage, response: ServerResponse, user: User, todoId: string): Promise<void> {
   if (findItemForUser(todoId, user.id) === null) {
     sendHtml(response, 404, renderNotFoundPage());
@@ -515,6 +550,47 @@ async function handleChangeLocation(request: IncomingMessage, response: ServerRe
   if (!moveTodoItemToLocation(todoId, user.id, folderId)) {
     sendHtml(response, 404, renderNotFoundPage());
     return;
+  }
+
+  redirect(response, returnTo);
+}
+
+async function handleBulkChangeLocation(request: IncomingMessage, response: ServerResponse, user: User): Promise<void> {
+  const form = new URLSearchParams(await readRequestBody(request));
+  const returnTo = getReturnTo(form, "/");
+  const todoIds = getSelectedTodoIds(form);
+
+  if (todoIds.length === 0) {
+    sendTodoPageForReturnTo(response, user, returnTo, "Select at least one item to move.");
+    return;
+  }
+
+  const locationResult = validateLocationInput(form.get("folderId"), form.get("folderPath"));
+
+  if (!locationResult.ok) {
+    sendTodoPageForReturnTo(response, user, returnTo, locationResult.message);
+    return;
+  }
+
+  for (const todoId of todoIds) {
+    if (findItemForUser(todoId, user.id) === null) {
+      sendHtml(response, 404, renderNotFoundPage());
+      return;
+    }
+  }
+
+  const folder = locationResult.value.folderPathSegments === null
+    ? null
+    : createFolderPath(user.id, locationResult.value.folderPathSegments);
+  const folderId = folder?.id ?? locationResult.value.folderId;
+
+  if (folderId !== null && findFolderForUser(folderId, user.id) === null) {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  for (const todoId of todoIds) {
+    moveTodoItemToLocation(todoId, user.id, folderId);
   }
 
   redirect(response, returnTo);
@@ -612,6 +688,10 @@ function itemLocationUrl(nodeId: string | null): string {
 
 function getReturnTo(form: URLSearchParams, fallback: string): string {
   return getSafeReturnTo(form.get("returnTo"), fallback);
+}
+
+function getSelectedTodoIds(form: URLSearchParams): Array<string> {
+  return [...new Set(form.getAll("itemId").map((id) => id.trim()).filter((id) => id.length > 0))];
 }
 
 function getSafeReturnTo(rawReturnTo: string | null, fallback: string): string {
