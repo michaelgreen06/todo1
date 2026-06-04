@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, ReactElement, ReactNode } from "react";
+import type { FormEvent, PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from "react";
 
 import {
   bulkMove,
@@ -27,7 +27,60 @@ type FormStatus = {
   readonly isSaving: boolean;
 };
 
+type PendingTouchDrag = {
+  readonly item: TodoItem;
+  readonly pointerId: number;
+  readonly startX: number;
+  readonly startY: number;
+  readonly handle: HTMLButtonElement;
+};
+
 const emptyFormStatus: FormStatus = { error: null, isSaving: false };
+const touchDragDelayMs = 350;
+const touchDragMoveTolerancePx = 8;
+
+function todoIdsEqual(left: ReadonlyArray<TodoItem>, right: ReadonlyArray<TodoItem>): boolean {
+  return left.length === right.length && left.every((item, index) => item.id === right[index]?.id);
+}
+
+function reorderByPointerY(order: ReadonlyArray<TodoItem>, movedId: string, list: HTMLUListElement, clientY: number): ReadonlyArray<TodoItem> | null {
+  const movedItem = order.find((item) => item.id === movedId);
+
+  if (movedItem === undefined) {
+    return null;
+  }
+
+  const withoutMoved = order.filter((item) => item.id !== movedId);
+  const cards = Array.from(list.querySelectorAll<HTMLElement>("[data-todo-id]"));
+  let insertionIndex = withoutMoved.length;
+
+  for (const card of cards) {
+    const itemId = card.dataset["todoId"];
+
+    if (itemId === undefined || itemId === movedId) {
+      continue;
+    }
+
+    const candidateIndex = withoutMoved.findIndex((item) => item.id === itemId);
+
+    if (candidateIndex === -1) {
+      continue;
+    }
+
+    const rect = card.getBoundingClientRect();
+
+    if (clientY < rect.top + (rect.height / 2)) {
+      insertionIndex = candidateIndex;
+      break;
+    }
+  }
+
+  return [
+    ...withoutMoved.slice(0, insertionIndex),
+    movedItem,
+    ...withoutMoved.slice(insertionIndex),
+  ];
+}
 
 export function WorkspaceApp(): ReactElement {
   const [selection, setSelection] = useState<WorkspaceSelection>(() => readStoredSelection());
@@ -39,7 +92,19 @@ export function WorkspaceApp(): ReactElement {
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft>({ title: "", body: "", folderId: "" });
   const [formStatus, setFormStatus] = useState<FormStatus>(emptyFormStatus);
+  const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
+  const [dragOrder, setDragOrder] = useState<ReadonlyArray<TodoItem> | null>(null);
   const restoredScrollRef = useRef(false);
+  const workspaceRef = useRef<WorkspaceView | null>(null);
+  const selectionRef = useRef<WorkspaceSelection>(selection);
+  const dragContainerRef = useRef<HTMLUListElement | null>(null);
+  const dragHandleRef = useRef<HTMLButtonElement | null>(null);
+  const draggedItemIdRef = useRef<string | null>(null);
+  const dragPointerIdRef = useRef<number | null>(null);
+  const dragOriginalOrderRef = useRef<ReadonlyArray<TodoItem>>([]);
+  const dragCurrentOrderRef = useRef<ReadonlyArray<TodoItem>>([]);
+  const touchLongPressTimerRef = useRef<number | null>(null);
+  const pendingTouchDragRef = useRef<PendingTouchDrag | null>(null);
 
   useEffect(() => {
     let isCurrent = true;
@@ -88,7 +153,12 @@ export function WorkspaceApp(): ReactElement {
 
   useEffect(() => {
     storeSelection(selection);
+    selectionRef.current = selection;
   }, [selection]);
+
+  useEffect(() => {
+    workspaceRef.current = workspace;
+  }, [workspace]);
 
   useEffect(() => {
     const saveScroll = (): void => {
@@ -116,6 +186,37 @@ export function WorkspaceApp(): ReactElement {
     });
   }, [workspace]);
 
+  useEffect(() => {
+    const handleWindowPointerMove = (event: PointerEvent): void => {
+      movePendingTouchDrag(event);
+
+      if (dragPointerIdRef.current !== event.pointerId) {
+        return;
+      }
+
+      event.preventDefault();
+      moveDraggedItem(event.clientY);
+    };
+
+    const handleWindowPointerUp = (event: PointerEvent): void => {
+      void finishPointerDrag(event.pointerId);
+    };
+
+    const handleWindowPointerCancel = (event: PointerEvent): void => {
+      cancelPointerDrag(event.pointerId);
+    };
+
+    window.addEventListener("pointermove", handleWindowPointerMove, { passive: false });
+    window.addEventListener("pointerup", handleWindowPointerUp);
+    window.addEventListener("pointercancel", handleWindowPointerCancel);
+
+    return () => {
+      window.removeEventListener("pointermove", handleWindowPointerMove);
+      window.removeEventListener("pointerup", handleWindowPointerUp);
+      window.removeEventListener("pointercancel", handleWindowPointerCancel);
+    };
+  });
+
   const selectedItems = useMemo(() => {
     if (workspace === null) {
       return [];
@@ -133,6 +234,169 @@ export function WorkspaceApp(): ReactElement {
       folderId: nextWorkspace.folder?.id ?? null,
       statusIds: nextWorkspace.selectedStatusIds,
     });
+  }
+
+  function clearTouchLongPress(): void {
+    if (touchLongPressTimerRef.current !== null) {
+      window.clearTimeout(touchLongPressTimerRef.current);
+      touchLongPressTimerRef.current = null;
+    }
+
+    pendingTouchDragRef.current = null;
+  }
+
+  function resetPointerDrag(): void {
+    dragHandleRef.current = null;
+    draggedItemIdRef.current = null;
+    dragPointerIdRef.current = null;
+    dragOriginalOrderRef.current = [];
+    dragCurrentOrderRef.current = [];
+    setDraggedItemId(null);
+    setDragOrder(null);
+  }
+
+  function beginPointerDrag(item: TodoItem, pointerId: number, handle: HTMLButtonElement): void {
+    const currentWorkspace = workspaceRef.current;
+
+    if (currentWorkspace === null) {
+      return;
+    }
+
+    const order = currentWorkspace.todos;
+    dragHandleRef.current = handle;
+    draggedItemIdRef.current = item.id;
+    dragPointerIdRef.current = pointerId;
+    dragOriginalOrderRef.current = order;
+    dragCurrentOrderRef.current = order;
+    setDraggedItemId(item.id);
+    setDragOrder(order);
+
+    if (typeof handle.setPointerCapture === "function") {
+      try {
+        handle.setPointerCapture(pointerId);
+      } catch (_error: unknown) {
+        // Browser can reject capture if the pointer has already ended.
+      }
+    }
+  }
+
+  function moveDraggedItem(clientY: number): void {
+    const movedId = draggedItemIdRef.current;
+    const list = dragContainerRef.current;
+
+    if (movedId === null || list === null) {
+      return;
+    }
+
+    const nextOrder = reorderByPointerY(dragCurrentOrderRef.current, movedId, list, clientY);
+
+    if (nextOrder === null || todoIdsEqual(nextOrder, dragCurrentOrderRef.current)) {
+      return;
+    }
+
+    dragCurrentOrderRef.current = nextOrder;
+    setDragOrder(nextOrder);
+  }
+
+  async function finishPointerDrag(pointerId: number): Promise<void> {
+    if (dragPointerIdRef.current !== pointerId) {
+      clearTouchLongPress();
+      return;
+    }
+
+    clearTouchLongPress();
+
+    const handle = dragHandleRef.current;
+
+    if (handle !== null && typeof handle.releasePointerCapture === "function" && handle.hasPointerCapture(pointerId)) {
+      handle.releasePointerCapture(pointerId);
+    }
+
+    const movedId = draggedItemIdRef.current;
+    const finalOrder = dragCurrentOrderRef.current;
+    const originalOrder = dragOriginalOrderRef.current;
+    resetPointerDrag();
+
+    if (movedId === null || todoIdsEqual(finalOrder, originalOrder)) {
+      return;
+    }
+
+    const movedIndex = finalOrder.findIndex((item) => item.id === movedId);
+
+    if (movedIndex === -1) {
+      return;
+    }
+
+    setWorkspace((current) => current === null ? current : { ...current, todos: finalOrder });
+
+    try {
+      const nextWorkspace = await reorderTodos({
+        ...selectionRef.current,
+        movedId,
+        previousId: finalOrder[movedIndex - 1]?.id ?? null,
+        nextId: finalOrder[movedIndex + 1]?.id ?? null,
+      });
+      setWorkspace(nextWorkspace);
+    } catch (reorderError: unknown) {
+      setError(errorMessage(reorderError, "Could not reorder items."));
+
+      try {
+        const nextWorkspace = await loadWorkspace(selectionRef.current);
+        setWorkspace(nextWorkspace);
+        setSelection({
+          folderId: nextWorkspace.folder?.id ?? null,
+          statusIds: nextWorkspace.selectedStatusIds,
+        });
+      } catch (refreshError: unknown) {
+        setError(errorMessage(refreshError, errorMessage(reorderError, "Could not restore item order.")));
+      }
+    }
+  }
+
+  function cancelPointerDrag(pointerId: number): void {
+    if (dragPointerIdRef.current === pointerId) {
+      resetPointerDrag();
+    }
+
+    clearTouchLongPress();
+  }
+
+  function movePendingTouchDrag(event: PointerEvent): void {
+    const pendingTouchDrag = pendingTouchDragRef.current;
+
+    if (pendingTouchDrag === null || pendingTouchDrag.pointerId !== event.pointerId || dragPointerIdRef.current !== null) {
+      return;
+    }
+
+    const movement = Math.hypot(event.clientX - pendingTouchDrag.startX, event.clientY - pendingTouchDrag.startY);
+
+    if (movement > touchDragMoveTolerancePx) {
+      clearTouchLongPress();
+    }
+  }
+
+  function handleDragPointerDown(item: TodoItem, event: ReactPointerEvent<HTMLButtonElement>): void {
+    if (event.pointerType === "touch") {
+      clearTouchLongPress();
+      pendingTouchDragRef.current = {
+        item,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        handle: event.currentTarget,
+      };
+      touchLongPressTimerRef.current = window.setTimeout(() => {
+        const pending = pendingTouchDragRef.current;
+
+        if (pending !== null) {
+          beginPointerDrag(pending.item, pending.pointerId, pending.handle);
+        }
+      }, touchDragDelayMs);
+      return;
+    }
+
+    event.preventDefault();
+    beginPointerDrag(item, event.pointerId, event.currentTarget);
   }
 
   function changeFolder(folderId: string | null): void {
@@ -348,6 +612,8 @@ export function WorkspaceApp(): ReactElement {
     );
   }
 
+  const visibleTodos = dragOrder ?? workspace.todos;
+
   return (
     <>
       <header className="topbar">
@@ -433,17 +699,18 @@ export function WorkspaceApp(): ReactElement {
             {workspace.todos.length === 0 ? (
               <p className="empty-state">No matching items in this location.</p>
             ) : (
-              <ul className="todo-list">
-                {workspace.todos.map((item, index) => (
+              <ul className="todo-list" ref={dragContainerRef}>
+                {visibleTodos.map((item, index) => (
                   <TodoCard
                     key={item.id}
                     item={item}
                     folders={workspace.folders}
                     index={index}
-                    total={workspace.todos.length}
+                    total={visibleTodos.length}
                     isSelected={selectedItemIds.includes(item.id)}
                     isExpanded={expandedItemIds.includes(item.id)}
                     isEditing={editingItemId === item.id}
+                    isDragging={draggedItemId === item.id}
                     editDraft={editDraft}
                     isSaving={formStatus.isSaving}
                     onSelect={toggleSelectedItem}
@@ -459,6 +726,7 @@ export function WorkspaceApp(): ReactElement {
                     onStatus={(todo) => { setDialog({ type: "status", item: todo }); setFormStatus(emptyFormStatus); }}
                     onMove={(todo) => { setDialog({ type: "move", item: todo }); setFormStatus(emptyFormStatus); }}
                     onReorder={(todo, direction) => { void moveItemByButton(todo, direction); }}
+                    onDragPointerDown={handleDragPointerDown}
                   />
                 ))}
               </ul>
@@ -660,6 +928,7 @@ function TodoCard(props: {
   readonly isSelected: boolean;
   readonly isExpanded: boolean;
   readonly isEditing: boolean;
+  readonly isDragging: boolean;
   readonly editDraft: EditDraft;
   readonly isSaving: boolean;
   readonly onSelect: (itemId: string, isSelected: boolean) => void;
@@ -671,11 +940,12 @@ function TodoCard(props: {
   readonly onStatus: (item: TodoItem) => void;
   readonly onMove: (item: TodoItem) => void;
   readonly onReorder: (item: TodoItem, direction: "up" | "down") => void;
+  readonly onDragPointerDown: (item: TodoItem, event: ReactPointerEvent<HTMLButtonElement>) => void;
 }): ReactElement {
   const primaryText = props.item.title ?? props.item.body;
 
   return (
-    <li className="todo-card" data-text-expanded={props.isExpanded ? "true" : "false"}>
+    <li className="todo-card" data-todo-id={props.item.id} data-dragging={props.isDragging ? "true" : "false"} data-text-expanded={props.isExpanded ? "true" : "false"}>
       <label className="todo-select">
         <input
           type="checkbox"
@@ -686,7 +956,14 @@ function TodoCard(props: {
         />
         <span>Select</span>
       </label>
-      <span className="drag-handle" aria-hidden="true">Grip</span>
+      <button
+        type="button"
+        className="drag-handle"
+        aria-label={`Drag to reorder ${primaryText}`}
+        onPointerDown={(event) => { props.onDragPointerDown(props.item, event); }}
+      >
+        Grip
+      </button>
       <article aria-labelledby={`todo-${props.item.id}-heading`}>
         {props.isEditing ? (
           <div className="inline-edit">

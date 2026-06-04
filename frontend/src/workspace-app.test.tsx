@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -181,6 +181,98 @@ describe("WorkspaceApp", () => {
     expect(requests).toContain("POST /api/workspace/view");
   });
 
+  it("renders drag handles as buttons", async () => {
+    globalThis.fetch = async (): Promise<Response> => jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem, secondItem] }) });
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("button", { name: "Drag to reorder Call client" })).toHaveClass("drag-handle");
+    expect(screen.getByRole("button", { name: "Drag to reorder Draft memo" })).toHaveClass("drag-handle");
+  });
+
+  it("reorders items locally during pointer drag without calling the reorder API", async () => {
+    const requests: Array<string> = [];
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      requests.push(input.toString());
+      return jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem, secondItem] }) });
+    };
+
+    render(<WorkspaceApp />);
+
+    const grip = await screen.findByRole("button", { name: "Drag to reorder Call client" });
+    setTodoCardRects();
+    fireEvent.pointerDown(grip, { pointerId: 1, pointerType: "mouse", clientY: 10 });
+    fireEvent.pointerMove(window, { pointerId: 1, pointerType: "mouse", clientY: 200 });
+
+    expect(visibleTodoTitles()).toEqual(["Draft memo", "Call client"]);
+    expect(requests).not.toContain("/api/todos/reorder");
+  });
+
+  it("persists pointer drag reorder with surrounding item ids on drop", async () => {
+    const requests: Array<{ readonly path: string; readonly body: string }> = [];
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const path = input.toString();
+      requests.push({ path, body: typeof init?.body === "string" ? init.body : "" });
+
+      if (path === "/api/todos/reorder") {
+        return jsonResponse({ workspace: makeWorkspace({ todos: [secondItem, inboxItem] }) });
+      }
+
+      return jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem, secondItem] }) });
+    };
+
+    render(<WorkspaceApp />);
+
+    const grip = await screen.findByRole("button", { name: "Drag to reorder Call client" });
+    setTodoCardRects();
+    fireEvent.pointerDown(grip, { pointerId: 1, pointerType: "mouse", clientY: 10 });
+    fireEvent.pointerMove(window, { pointerId: 1, pointerType: "mouse", clientY: 200 });
+    fireEvent.pointerUp(window, { pointerId: 1, pointerType: "mouse" });
+
+    await waitFor(() => {
+      expect(requests).toContainEqual({
+        path: "/api/todos/reorder",
+        body: JSON.stringify({
+          folderId: "folder-1",
+          statusIds: ["active"],
+          movedId: "todo-1",
+          previousId: "todo-2",
+          nextId: null,
+        }),
+      });
+    });
+    expect(visibleTodoTitles()).toEqual(["Draft memo", "Call client"]);
+  });
+
+  it("reloads confirmed server order after failed pointer drag reorder", async () => {
+    const requests: Array<string> = [];
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const path = input.toString();
+      requests.push(path);
+
+      if (path === "/api/todos/reorder") {
+        return jsonResponse({ error: "Rank conflict" }, 409);
+      }
+
+      return jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem, secondItem] }) });
+    };
+
+    render(<WorkspaceApp />);
+
+    const grip = await screen.findByRole("button", { name: "Drag to reorder Call client" });
+    setTodoCardRects();
+    fireEvent.pointerDown(grip, { pointerId: 1, pointerType: "mouse", clientY: 10 });
+    fireEvent.pointerMove(window, { pointerId: 1, pointerType: "mouse", clientY: 200 });
+    fireEvent.pointerUp(window, { pointerId: 1, pointerType: "mouse" });
+
+    expect(visibleTodoTitles()).toEqual(["Draft memo", "Call client"]);
+    await waitFor(() => {
+      expect(visibleTodoTitles()).toEqual(["Call client", "Draft memo"]);
+    });
+    expect(requests.lastIndexOf("/api/workspace/view")).toBeGreaterThan(requests.indexOf("/api/todos/reorder"));
+    expect(screen.getByText("Rank conflict")).toBeInTheDocument();
+  });
+
   it("rejects invalid API responses", () => {
     expect(() => validateWorkspaceResponse({ nope: true })).toThrow("Invalid workspace response.");
   });
@@ -202,9 +294,22 @@ function makeWorkspace(overrides: {
   };
 }
 
-function jsonResponse(payload: unknown): Response {
+function visibleTodoTitles(): ReadonlyArray<string> {
+  return Array.from(document.querySelectorAll<HTMLElement>("h2[id^='todo-'][id$='-heading']")).map((heading) => heading.textContent ?? "");
+}
+
+function setTodoCardRects(): void {
+  const cards = Array.from(document.querySelectorAll<HTMLElement>("[data-todo-id]"));
+
+  cards.forEach((card, index) => {
+    const top = index * 100;
+    vi.spyOn(card, "getBoundingClientRect").mockReturnValue(new DOMRect(0, top, 300, 80));
+  });
+}
+
+function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
-    status: 200,
+    status,
     headers: { "Content-Type": "application/json" },
   });
 }

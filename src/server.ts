@@ -174,7 +174,7 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
     return;
   }
 
-  if (method === "GET" && url.pathname.startsWith("/assets/")) {
+  if (method === "GET" && isBuiltAssetRequest(url.pathname)) {
     await serveBuiltAsset(url, response);
     return;
   }
@@ -1423,6 +1423,17 @@ function redirect(response: ServerResponse, location: string): void {
   response.end("");
 }
 
+function isBuiltAssetRequest(pathname: string): boolean {
+  if (pathname.startsWith("/assets/")) {
+    return true;
+  }
+
+  const segments = pathname.split("/").filter((segment) => segment.length > 0);
+  const [segment] = segments;
+
+  return segments.length === 1 && segment !== undefined && extname(segment).length > 0;
+}
+
 async function serveWorkspaceShell(response: ServerResponse): Promise<boolean> {
   try {
     const html = await readFile(join(FRONTEND_DIST_DIR, "index.html"), "utf8");
@@ -1453,12 +1464,25 @@ async function serveBuiltAsset(url: URL, response: ServerResponse): Promise<void
 
 function getSafeAssetPath(pathname: string): string | null {
   const segments = pathname.split("/").filter((segment) => segment.length > 0);
+  const [firstSegment] = segments;
 
-  if (segments.length < 2 || segments[0] !== "assets" || segments.some((segment) => segment === "..")) {
+  if (segments.length === 0 || firstSegment === undefined || segments.some((segment) => segment === "..")) {
     return null;
   }
 
-  return join(FRONTEND_DIST_DIR, ...segments);
+  if (firstSegment === "assets") {
+    if (segments.length < 2) {
+      return null;
+    }
+
+    return join(FRONTEND_DIST_DIR, ...segments);
+  }
+
+  if (segments.length === 1 && extname(firstSegment).length > 0) {
+    return join(FRONTEND_DIST_DIR, firstSegment);
+  }
+
+  return null;
 }
 
 function getAssetContentType(path: string): string {

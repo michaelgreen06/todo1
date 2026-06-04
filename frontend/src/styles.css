@@ -324,12 +324,30 @@ legend {
 .drag-handle {
   align-self: start;
   min-height: auto;
+  border: 0;
   border-radius: 999px;
   padding: .5rem .65rem;
   background: #f1eadb;
   color: var(--muted);
   font-size: .86rem;
   font-weight: 800;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.drag-handle:hover {
+  background: #e8dfcf;
+}
+
+.drag-handle:active,
+.todo-card[data-dragging="true"] .drag-handle {
+  cursor: grabbing;
+}
+
+.todo-card[data-dragging="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 10px 26px rgba(31, 122, 77, .18);
 }
 
 .todo-summary {

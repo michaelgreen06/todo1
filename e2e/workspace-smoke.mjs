@@ -106,7 +106,7 @@ async function launchBrowserOrSkip() {
 }
 
 async function expectHeading(page, name) {
-  await page.getByRole("heading", { name }).waitFor();
+  await page.getByRole("heading", { name, exact: true }).waitFor();
 }
 
 async function expectText(page, text) {
