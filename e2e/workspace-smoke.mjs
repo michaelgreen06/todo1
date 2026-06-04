@@ -68,7 +68,7 @@ try {
     await expectText(page, "2 selected");
     await page.getByRole("button", { name: "Move selected" }).click();
     await page.getByLabel("Existing location").selectOption("");
-    await page.getByRole("button", { name: "Move selected" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Move selected" }).click();
     await expectHeading(page, "Smoke");
     await expectText(page, "No matching items in this location.");
   } finally {
@@ -85,6 +85,7 @@ async function addTodo(page, title, body) {
   await page.getByLabel(/Title/u).fill(title);
   await page.getByLabel("Description").fill(body);
   await page.getByRole("button", { name: "Add todo" }).click();
+  await expectHeading(page, title);
 }
 
 async function launchBrowserOrSkip() {
