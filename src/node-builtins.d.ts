@@ -37,7 +37,7 @@ declare module "node:http" {
   export type ServerResponse = {
     statusCode: number;
     setHeader(name: string, value: string | ReadonlyArray<string>): void;
-    end(data?: string): void;
+    end(data?: string | Uint8Array): void;
   };
 
   export type Server = {
@@ -47,6 +47,20 @@ declare module "node:http" {
   export function createServer(
     listener: (request: IncomingMessage, response: ServerResponse) => void,
   ): Server;
+}
+
+declare module "node:fs/promises" {
+  export function readFile(path: string): Promise<Uint8Array>;
+  export function readFile(path: string, encoding: "utf8"): Promise<string>;
+}
+
+declare module "node:path" {
+  export function extname(path: string): string;
+  export function join(...paths: ReadonlyArray<string>): string;
+}
+
+declare module "node:url" {
+  export function fileURLToPath(url: URL | string): string;
 }
 
 declare module "node:process" {

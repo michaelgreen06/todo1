@@ -18,6 +18,7 @@ export default tseslint.config(
     ignores: [
       "node_modules/**",
       "dist/**",
+      "frontend/dist/**",
       "build/**",
       ".next/**",
       "coverage/**",
@@ -27,6 +28,17 @@ export default tseslint.config(
   {
     files: ["**/*.{js,mjs,cjs}"],
     ...js.configs.recommended,
+  },
+
+  {
+    files: ["e2e/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        process: "readonly",
+        setTimeout: "readonly",
+      },
+    },
   },
 
   ...typedTypeScriptConfigs,

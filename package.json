@@ -4,17 +4,22 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && vite build --config frontend/vite.config.ts",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p frontend/tsconfig.json --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "check": "npm run typecheck && npm run lint && npm run build",
     "create-device-token": "tsc -p tsconfig.build.json && node dist/create-device-token.js",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "npm run test:backend && npm run test:frontend && npm run test:e2e",
+    "test:backend": "tsc -p tsconfig.build.json && node --test test/*.test.mjs",
+    "test:frontend": "vitest run --config frontend/vitest.config.ts",
+    "test:e2e": "node e2e/workspace-smoke.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
+    "@types/react": "^19.2.16",
+    "@types/react-dom": "^19.2.3",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",
@@ -24,6 +29,16 @@
     "typescript-eslint": "^8.0.0"
   },
   "dependencies": {
-    "fractional-indexing": "^3.2.0"
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@vitejs/plugin-react": "^6.0.2",
+    "fractional-indexing": "^3.2.0",
+    "jsdom": "^27.0.1",
+    "playwright": "^1.60.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "vite": "^8.0.16",
+    "vitest": "^3.2.6"
   }
 }

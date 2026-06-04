@@ -279,6 +279,147 @@ test("folder hierarchy and inbox", async (suite) => {
       assert.equal(listTodoItems(user.id, folder.id, [activeId]).map((item) => item.id)[0], active.id);
     });
   });
+
+  await suite.test("serves authenticated JSON workspace APIs", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("api-workspace@example.com");
+      const activeId = statusId(user.id, "Active");
+      const completedId = statusId(user.id, "Completed");
+      const folder = createFolderPath(user.id, ["Projects"]);
+      const item = createTodoItem(user.id, "API item", "API body", folder.id);
+      const cookie = createSessionCookie(user.id);
+
+      const unauthenticated = await sendRequest({ method: "GET", url: "/api/workspace/default" });
+      assert.equal(unauthenticated.statusCode, 401);
+
+      const defaultResponse = await sendRequest({ method: "GET", url: "/api/workspace/default", headers: { cookie } });
+      assert.equal(defaultResponse.statusCode, 200);
+      assert.deepEqual(JSON.parse(defaultResponse.body).workspace.selectedStatusIds, [activeId]);
+
+      const viewResponse = await sendJsonRequest({
+        method: "POST",
+        url: "/api/workspace/view",
+        cookie,
+        body: { folderId: folder.id, statusIds: [activeId, completedId] },
+      });
+      assert.equal(viewResponse.statusCode, 200);
+      const view = JSON.parse(viewResponse.body).workspace;
+      assert.equal(view.folder.id, folder.id);
+      assert.deepEqual(view.todos.map((todo) => todo.id), [item.id]);
+    });
+  });
+
+  await suite.test("mutates todos and folders through authenticated JSON APIs", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("api-mutations@example.com");
+      const activeId = statusId(user.id, "Active");
+      const completedId = statusId(user.id, "Completed");
+      const cookie = createSessionCookie(user.id);
+
+      const folderResponse = await sendJsonRequest({
+        method: "POST",
+        url: "/api/folders",
+        cookie,
+        body: { folderPath: "Projects / API", folderId: null, statusIds: [activeId] },
+      });
+      assert.equal(folderResponse.statusCode, 201);
+      const folder = JSON.parse(folderResponse.body).folder;
+
+      const createResponse = await sendJsonRequest({
+        method: "POST",
+        url: "/api/todos",
+        cookie,
+        body: { title: "Created", body: "Created body", folderId: folder.id },
+      });
+      assert.equal(createResponse.statusCode, 201);
+      const created = JSON.parse(createResponse.body).item;
+
+      const updateResponse = await sendJsonRequest({
+        method: "PATCH",
+        url: `/api/todos/${created.id}`,
+        cookie,
+        body: { title: "Edited", body: "Edited body", folderId: null },
+      });
+      assert.equal(updateResponse.statusCode, 200);
+      assert.equal(JSON.parse(updateResponse.body).item.nodeId, null);
+
+      const statusResponse = await sendJsonRequest({
+        method: "POST",
+        url: `/api/todos/${created.id}/status`,
+        cookie,
+        body: { statusId: completedId, note: "Done by API" },
+      });
+      assert.equal(statusResponse.statusCode, 200);
+      assert.equal(JSON.parse(statusResponse.body).item.statusId, completedId);
+
+      const moveResponse = await sendJsonRequest({
+        method: "POST",
+        url: `/api/todos/${created.id}/location`,
+        cookie,
+        body: { folderId: folder.id, folderPath: "" },
+      });
+      assert.equal(moveResponse.statusCode, 200);
+      assert.equal(JSON.parse(moveResponse.body).item.nodeId, folder.id);
+
+      const renamedResponse = await sendJsonRequest({
+        method: "POST",
+        url: `/api/folders/${folder.id}/rename`,
+        cookie,
+        body: { name: "API Renamed", folderId: folder.id, statusIds: [activeId, completedId] },
+      });
+      assert.equal(renamedResponse.statusCode, 200);
+      assert.equal(JSON.parse(renamedResponse.body).workspace.folder.name, "API Renamed");
+    });
+  });
+
+  await suite.test("bulk move and reorder JSON APIs preserve ownership checks", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const owner = findOrCreateUserByEmail("api-owner@example.com");
+      const intruder = findOrCreateUserByEmail("api-intruder@example.com");
+      const ownerItem = createTodoItem(owner.id, "Owner", "Owner body");
+      const first = createTodoItem(intruder.id, "First", "First body");
+      const second = createTodoItem(intruder.id, "Second", "Second body");
+      const activeId = statusId(intruder.id, "Active");
+      const cookie = createSessionCookie(intruder.id);
+
+      const blockedResponse = await sendJsonRequest({
+        method: "POST",
+        url: "/api/todos/bulk/location",
+        cookie,
+        body: { itemIds: [first.id, ownerItem.id], folderId: null, folderPath: "Should Not Exist", statusIds: [activeId] },
+      });
+      assert.equal(blockedResponse.statusCode, 404);
+      assert.deepEqual(listFolders(intruder.id, []), []);
+
+      const bulkResponse = await sendJsonRequest({
+        method: "POST",
+        url: "/api/todos/bulk/location",
+        cookie,
+        body: { itemIds: [first.id, second.id], folderId: null, folderPath: "Moved", statusIds: [activeId] },
+      });
+      assert.equal(bulkResponse.statusCode, 200);
+      const movedFolder = listFolders(intruder.id, [activeId]).find((folder) => folder.name === "Moved");
+      assert.notEqual(movedFolder, undefined);
+
+      const reorderResponse = await sendJsonRequest({
+        method: "POST",
+        url: "/api/todos/reorder",
+        cookie,
+        body: {
+          movedId: second.id,
+          previousId: first.id,
+          nextId: null,
+          folderId: movedFolder.id,
+          statusIds: [activeId],
+        },
+      });
+      assert.equal(reorderResponse.statusCode, 200);
+      assert.deepEqual(listTodoItems(intruder.id, movedFolder.id, [activeId]).map((todo) => todo.id), [first.id, second.id]);
+    });
+  });
 });
 
 function requiredStatusId(statuses, name) {
@@ -361,4 +502,13 @@ async function sendRequest({ method, url, headers = {}, body = "" }) {
   };
   await handleRequest(request, response);
   return response;
+}
+
+async function sendJsonRequest({ method, url, cookie, body }) {
+  return await sendRequest({
+    method,
+    url,
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
