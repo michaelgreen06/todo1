@@ -22,6 +22,7 @@ import {
   renameFolder,
   reorderVisibleTodoItem,
 } from "../dist/db.js";
+import { CAPTURE_PROMPT_RULES } from "../dist/capture-router.js";
 import { handleRequest } from "../dist/server.js";
 import { hashRawToken } from "../dist/token.js";
 
@@ -292,6 +293,29 @@ test("folder hierarchy and inbox", async (suite) => {
     });
   });
 
+  await suite.test("serves authenticated prompts page with capture routing examples", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("prompts@example.com");
+      const cookie = createSessionCookie(user.id);
+
+      const unauthenticated = await sendRequest({ method: "GET", url: "/prompts" });
+      assert.equal(unauthenticated.statusCode, 303);
+      assert.equal(unauthenticated.headers.Location, "/login");
+
+      const response = await sendRequest({ method: "GET", url: "/prompts", headers: { cookie } });
+      assert.equal(response.statusCode, 200);
+      assert.match(response.body, /<h1 id="prompts-heading">Prompts<\/h1>/u);
+      assert.match(response.body, /href="\/"/u);
+
+      for (const rule of CAPTURE_PROMPT_RULES) {
+        assert.match(response.body, new RegExp(escapeRegExp(rule.spokenPattern), "u"));
+        assert.match(response.body, new RegExp(escapeRegExp(rule.destination), "u"));
+        assert.match(response.body, new RegExp(escapeRegExp(rule.itemBody), "u"));
+      }
+    });
+  });
+
   await suite.test("serves authenticated JSON workspace APIs", async () => {
     await withDatabaseAsync(async () => {
       initializeDatabase();
@@ -442,6 +466,10 @@ function requiredStatusId(statuses, name) {
 
 function statusId(userId, name) {
   return requiredStatusId(listStatuses(userId), name);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 function createSessionCookie(userId) {

@@ -549,6 +549,53 @@ test("unified capture server MVP", async (suite) => {
       }]);
     });
   });
+
+  await suite.test("routes issue and meeting note captures into their folder trees", async () => {
+    await withDatabaseAsync(async (databasePath) => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("issue-meeting-route@example.com");
+      const rawToken = "issue-meeting-route-token";
+      createDeviceToken(user.id, "Michael phone", hashRawToken(rawToken));
+
+      const issueResponse = await postCapture(`Bearer ${rawToken}`, {
+        ...validCapture,
+        client_capture_id: "124f49c5-3a65-4d2a-98d0-072b791bdf90",
+        text: "add an issue for kitchen sink that order a replacement aerator",
+      });
+      assert.equal(issueResponse.statusCode, 201);
+      const issueBody = JSON.parse(issueResponse.body);
+
+      const meetingResponse = await postCapture(`Bearer ${rawToken}`, {
+        ...validCapture,
+        client_capture_id: "922bf999-134c-479c-960c-e0425731d2e6",
+        text: "add meeting note to regen hub that ask about the launch checklist",
+      });
+      assert.equal(meetingResponse.statusCode, 201);
+      const meetingBody = JSON.parse(meetingResponse.body);
+
+      assert.deepEqual(queryRows(databasePath, `
+        SELECT parent.name AS parent_name, child.name AS child_name, items.title, items.body
+        FROM items
+        JOIN nodes AS child ON child.id = items.node_id
+        JOIN nodes AS parent ON parent.id = child.parent_id
+        WHERE items.id IN ('${issueBody.routed_item_id}', '${meetingBody.routed_item_id}')
+        ORDER BY parent.name;
+      `), [
+        {
+          parent_name: "Issues",
+          child_name: "kitchen sink",
+          title: null,
+          body: "order a replacement aerator",
+        },
+        {
+          parent_name: "Meetings",
+          child_name: "regen hub",
+          title: null,
+          body: "ask about the launch checklist",
+        },
+      ]);
+    });
+  });
 });
 
 function withDatabase(run) {

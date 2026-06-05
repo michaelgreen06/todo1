@@ -702,7 +702,8 @@ export function WorkspaceApp(): ReactElement {
           <p className="eyebrow">Signed in as</p>
           <p className="user-email">{workspace.user.email}</p>
         </div>
-        <div className="todo-actions">
+        <div className="todo-actions topbar-actions">
+          <a href="/prompts" className="button-link secondary">Prompts</a>
           <button
             type="button"
             className="secondary"

@@ -93,6 +93,7 @@ describe("WorkspaceApp", () => {
     render(<WorkspaceApp />);
 
     expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Prompts" })).toHaveAttribute("href", "/prompts");
     expect(requests[0]).toEqual({
       path: "/api/workspace/view",
       body: JSON.stringify({ folderId: "folder-1", statusIds: ["active", "completed"] }),

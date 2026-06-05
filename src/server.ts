@@ -36,6 +36,7 @@ import {
   renderEditPage,
   renderLoginPage,
   renderNotFoundPage,
+  renderPromptsPage,
   renderTodoPage,
 } from "./html.js";
 import { getHost, getPort, getPublicBaseUrl } from "./process-env.js";
@@ -213,6 +214,11 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
 
     // TODO: Remove this SSR workspace fallback after the React workspace is stable.
     sendTodoPage(response, user, url, null, null);
+    return;
+  }
+
+  if (method === "GET" && url.pathname === "/prompts") {
+    sendHtml(response, 200, renderPromptsPage({ user }));
     return;
   }
 

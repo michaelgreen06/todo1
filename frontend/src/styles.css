@@ -414,7 +414,17 @@ legend {
   margin-top: .7rem;
 }
 
+.topbar-actions {
+  margin-top: 0;
+}
+
 .todo-actions button {
+  min-height: 2.2rem;
+  padding: .45rem .7rem;
+  font-size: .88rem;
+}
+
+.todo-actions a {
   min-height: 2.2rem;
   padding: .45rem .7rem;
   font-size: .88rem;

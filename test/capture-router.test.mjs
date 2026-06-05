@@ -42,12 +42,48 @@ test("capture router", async (suite) => {
     });
   });
 
+  await suite.test("routes issue commands to Issues subfolders", () => {
+    assert.deepEqual(routeCaptureText("add an issue for kitchen sink that order a replacement aerator"), {
+      kind: "folder",
+      title: null,
+      body: "order a replacement aerator",
+      folderPath: ["Issues", "kitchen sink"],
+      ruleName: "issue-command",
+    });
+  });
+
+  await suite.test("routes meeting note commands to Meetings subfolders", () => {
+    assert.deepEqual(routeCaptureText("add meeting note to regen hub that ask about the launch checklist"), {
+      kind: "folder",
+      title: null,
+      body: "ask about the launch checklist",
+      folderPath: ["Meetings", "regen hub"],
+      ruleName: "meeting-note-command",
+    });
+  });
+
   await suite.test("leaves malformed list commands in the inbox", () => {
     for (const text of [
       "add to my costco list",
       "add peanut butter to my list",
       "add peanut butter to costco",
       "please add peanut butter to my costco list",
+    ]) {
+      assert.deepEqual(routeCaptureText(text), {
+        kind: "default",
+        title: null,
+        body: text,
+        folderPath: null,
+      });
+    }
+  });
+
+  await suite.test("leaves malformed issue and meeting note commands in the inbox", () => {
+    for (const text of [
+      "add an issue for kitchen sink",
+      "add an issue that order a replacement aerator",
+      "add meeting note to regen hub",
+      "add meeting note that ask about the launch checklist",
     ]) {
       assert.deepEqual(routeCaptureText(text), {
         kind: "default",

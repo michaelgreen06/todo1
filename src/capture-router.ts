@@ -1,5 +1,12 @@
 export type CaptureRoute = DefaultCaptureRoute | FolderCaptureRoute;
 
+export type CapturePromptRule = {
+  readonly name: string;
+  readonly spokenPattern: string;
+  readonly destination: string;
+  readonly itemBody: string;
+};
+
 type DefaultCaptureRoute = {
   readonly kind: "default";
   readonly title: null;
@@ -19,10 +26,41 @@ type CaptureRule = (text: string) => FolderCaptureRoute | null;
 
 const AGENT_PREFIX_PATTERN = /^\s*agent\b[\s,.:;!?-]*/iu;
 const LIST_COMMAND_PATTERN = /^\s*add\s+(.+?)\s+to\s+(.+?)\s+list\s*[.!?]*\s*$/iu;
+const ISSUE_COMMAND_PATTERN = /^\s*add\s+an\s+issue\s+for\s+(.+?)\s+that\s+(.+?)\s*$/iu;
+const MEETING_NOTE_COMMAND_PATTERN = /^\s*add\s+meeting\s+note\s+to\s+(.+?)\s+that\s+(.+?)\s*$/iu;
+
+export const CAPTURE_PROMPT_RULES: ReadonlyArray<CapturePromptRule> = [
+  {
+    name: "Agent",
+    spokenPattern: "agent, search facebook marketplace for swingtop bottles",
+    destination: "Agent",
+    itemBody: "search facebook marketplace for swingtop bottles",
+  },
+  {
+    name: "List",
+    spokenPattern: "add peanut butter to my costco list",
+    destination: "Errands / costco",
+    itemBody: "peanut butter",
+  },
+  {
+    name: "Issue",
+    spokenPattern: "add an issue for kitchen sink that order a replacement aerator",
+    destination: "Issues / kitchen sink",
+    itemBody: "order a replacement aerator",
+  },
+  {
+    name: "Meeting note",
+    spokenPattern: "add meeting note to regen hub that ask about the launch checklist",
+    destination: "Meetings / regen hub",
+    itemBody: "ask about the launch checklist",
+  },
+];
 
 const CAPTURE_RULES: ReadonlyArray<CaptureRule> = [
   routeAgentPrefix,
   routeListCommand,
+  routeIssueCommand,
+  routeMeetingNoteCommand,
 ];
 
 export function routeCaptureText(text: string): CaptureRoute {
@@ -85,6 +123,52 @@ function routeListCommand(text: string): FolderCaptureRoute | null {
     body: item,
     folderPath: ["Errands", list],
     ruleName: "list-command",
+  };
+}
+
+function routeIssueCommand(text: string): FolderCaptureRoute | null {
+  const match = ISSUE_COMMAND_PATTERN.exec(text);
+
+  if (match === null) {
+    return null;
+  }
+
+  const folder = collapseWhitespace(match[1] ?? "");
+  const body = collapseWhitespace(match[2] ?? "");
+
+  if (folder.length === 0 || body.length === 0) {
+    return null;
+  }
+
+  return {
+    kind: "folder",
+    title: null,
+    body,
+    folderPath: ["Issues", folder],
+    ruleName: "issue-command",
+  };
+}
+
+function routeMeetingNoteCommand(text: string): FolderCaptureRoute | null {
+  const match = MEETING_NOTE_COMMAND_PATTERN.exec(text);
+
+  if (match === null) {
+    return null;
+  }
+
+  const folder = collapseWhitespace(match[1] ?? "");
+  const body = collapseWhitespace(match[2] ?? "");
+
+  if (folder.length === 0 || body.length === 0) {
+    return null;
+  }
+
+  return {
+    kind: "folder",
+    title: null,
+    body,
+    folderPath: ["Meetings", folder],
+    ruleName: "meeting-note-command",
   };
 }
 
