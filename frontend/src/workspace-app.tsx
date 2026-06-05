@@ -422,6 +422,7 @@ export function WorkspaceApp(): ReactElement {
   function changeFolder(folderId: string | null): void {
     setSelectedItemIds([]);
     setEditingItemId(null);
+    setFormStatus(emptyFormStatus);
     setSelection({ ...selection, folderId });
   }
 
@@ -430,7 +431,13 @@ export function WorkspaceApp(): ReactElement {
       ? [...selection.statusIds, statusId]
       : selection.statusIds.filter((id) => id !== statusId);
     setSelectedItemIds([]);
+    setFormStatus(emptyFormStatus);
     setSelection({ ...selection, statusIds });
+  }
+
+  function openCreateDialog(): void {
+    setFormStatus(emptyFormStatus);
+    setDialog({ type: "create" });
   }
 
   function toggleSelectedItem(itemId: string, isSelected: boolean): void {
@@ -691,7 +698,7 @@ export function WorkspaceApp(): ReactElement {
                 <p className="eyebrow">{workspace.folder === null ? "Unfiled items" : "Direct folder items"}</p>
                 <h1 id="todo-list-heading">{workspace.folder?.name ?? "Inbox"}</h1>
               </div>
-              <button type="button" className="secondary" onClick={() => { setDialog({ type: "create" }); }}>Add item</button>
+              <button type="button" className="secondary" onClick={openCreateDialog}>Add item</button>
             </div>
             {error === null ? null : <p className="notice error">{error}</p>}
             {formStatus.error === null ? null : <p className="notice error">{formStatus.error}</p>}

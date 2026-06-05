@@ -160,6 +160,33 @@ describe("WorkspaceApp", () => {
     expect(window.sessionStorage.getItem("todo.workspace.statusIds")).toContain("completed");
   });
 
+  it("clears stale folder form state before opening create item dialog", async () => {
+    const user = userEvent.setup();
+    let folderCreateAttemptCount = 0;
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const path = input.toString();
+
+      if (path === "/api/folders") {
+        folderCreateAttemptCount += 1;
+        return jsonResponse({ error: "Folder create failed" }, 500);
+      }
+
+      return jsonResponse({ workspace: makeWorkspace() });
+    };
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Add folder path"), "Project / New");
+    await user.click(screen.getByRole("button", { name: "Add folder" }));
+    expect(await screen.findByText("Folder create failed")).toBeInTheDocument();
+    expect(folderCreateAttemptCount).toBe(1);
+
+    await user.click(screen.getByRole("button", { name: "Add item" }));
+    expect(screen.getByRole("heading", { name: "Add item" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add todo" })).toBeEnabled();
+  });
+
   it("opens, cancels, and saves inline card edits", async () => {
     const user = userEvent.setup();
     const updatedItem = { ...inboxItem, title: "Edited title", body: "Edited body" };
