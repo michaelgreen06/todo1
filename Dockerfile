@@ -7,6 +7,7 @@ RUN npm ci
 
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
+COPY frontend ./frontend
 
 RUN npm run build
 

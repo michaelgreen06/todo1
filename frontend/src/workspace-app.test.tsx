@@ -69,6 +69,7 @@ describe("WorkspaceApp", () => {
 
   beforeEach(() => {
     window.sessionStorage.clear();
+    window.history.replaceState(null, "", "/");
     window.scrollTo = vi.fn();
   });
 
@@ -98,6 +99,43 @@ describe("WorkspaceApp", () => {
     });
     await waitFor(() => {
       expect(window.scrollTo).toHaveBeenCalledWith({ top: 120 });
+    });
+  });
+
+  it("uses folder route path before stored workspace state", async () => {
+    window.sessionStorage.setItem("todo.workspace.folderId", "");
+    window.history.replaceState(null, "", "/folders/folder-1");
+    const requests: Array<{ readonly path: string; readonly body: string }> = [];
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      requests.push({ path: input.toString(), body: typeof init?.body === "string" ? init.body : "" });
+      return jsonResponse({ workspace: makeWorkspace() });
+    };
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
+    expect(requests[0]).toEqual({
+      path: "/api/workspace/view",
+      body: JSON.stringify({ folderId: "folder-1", statusIds: [] }),
+    });
+  });
+
+  it("keeps browser path in sync when changing folders", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, "", "/folders/folder-1");
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const isInboxRequest = input.toString() === "/api/workspace/view"
+        && typeof init?.body === "string"
+        && init.body.includes("\"folderId\":null");
+      return jsonResponse({ workspace: makeWorkspace({ folder: isInboxRequest ? null : projectFolder }) });
+    };
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Location"), "");
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/");
     });
   });
 
@@ -263,6 +301,9 @@ describe("WorkspaceApp", () => {
     setTodoCardRects();
     fireEvent.pointerDown(grip, { pointerId: 1, pointerType: "mouse", clientY: 10 });
     fireEvent.pointerMove(window, { pointerId: 1, pointerType: "mouse", clientY: 200 });
+    await waitFor(() => {
+      expect(visibleTodoTitles()).toEqual(["Draft memo", "Call client"]);
+    });
     fireEvent.pointerUp(window, { pointerId: 1, pointerType: "mouse" });
 
     expect(visibleTodoTitles()).toEqual(["Draft memo", "Call client"]);
@@ -279,14 +320,17 @@ describe("WorkspaceApp", () => {
 });
 
 function makeWorkspace(overrides: {
+  readonly folder?: Folder | null;
   readonly todos?: ReadonlyArray<TodoItem>;
   readonly selectedStatusIds?: ReadonlyArray<string>;
 } = {}): WorkspaceView {
+  const folder = overrides.folder === undefined ? projectFolder : overrides.folder;
+
   return {
     user: { email: "test@example.com" },
-    folder: projectFolder,
+    folder,
     folders: [projectFolder],
-    ancestors: [projectFolder],
+    ancestors: folder === null ? [] : [projectFolder],
     inboxCount: 0,
     todos: overrides.todos ?? [inboxItem],
     statuses: [activeStatus, completedStatus],

@@ -6,7 +6,7 @@ const SCROLL_KEY = "todo.workspace.scrollY";
 
 export function readStoredSelection(): WorkspaceSelection {
   return {
-    folderId: getStoredNullableString(FOLDER_KEY),
+    folderId: getUrlFolderId() ?? getStoredNullableString(FOLDER_KEY),
     statusIds: getStoredStringArray(STATUS_KEY),
   };
 }
@@ -29,6 +29,34 @@ export function readStoredScrollY(): number {
 
 export function storeScrollY(scrollY: number): void {
   window.sessionStorage.setItem(SCROLL_KEY, Math.max(0, Math.round(scrollY)).toString());
+}
+
+export function updateFolderUrl(folderId: string | null): void {
+  const nextPath = folderId === null ? "/" : `/folders/${encodeURIComponent(folderId)}`;
+
+  if (window.location.pathname !== nextPath) {
+    window.history.pushState(null, "", nextPath);
+  }
+}
+
+function getUrlFolderId(): string | null {
+  const match = /^\/folders\/([^/]+)$/u.exec(window.location.pathname);
+
+  if (match === null) {
+    return null;
+  }
+
+  const [, encodedFolderId] = match;
+
+  if (encodedFolderId === undefined) {
+    return null;
+  }
+
+  try {
+    return decodeURIComponent(encodedFolderId);
+  } catch {
+    return null;
+  }
 }
 
 function getStoredNullableString(key: string): string | null {

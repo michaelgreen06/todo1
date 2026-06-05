@@ -39,6 +39,7 @@ import {
   renderTodoPage,
 } from "./html.js";
 import { getHost, getPort, getPublicBaseUrl } from "./process-env.js";
+import { triggerPlaudTranscriberRun } from "./railway.js";
 import { hashRawToken } from "./token.js";
 import {
   validateCaptureInput,
@@ -55,10 +56,10 @@ import type { WorkspaceView, WorkspaceViewRequest } from "./api-types.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 const SESSION_COOKIE_NAME = "todo_session";
-const MAX_CAPTURE_REQUEST_BODY_BYTES = 64 * 1024;
+const MAX_CAPTURE_REQUEST_BODY_BYTES = 1024 * 1024;
 const MAX_API_REQUEST_BODY_BYTES = 128 * 1024;
 const PROJECT_ROOT = fileURLToPath(new URL("..", import.meta.url));
-const FRONTEND_DIST_DIR = join(PROJECT_ROOT, "frontend", "dist");
+const FRONTEND_DIST_DIR = join(PROJECT_ROOT, "dist", "frontend");
 
 type AuthenticatedRequest = {
   readonly user: User;
@@ -256,6 +257,10 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
         return;
       }
 
+      if (await serveWorkspaceShell(response)) {
+        return;
+      }
+
       // TODO: Remove this SSR workspace fallback after the React workspace is stable.
       sendTodoPage(response, user, url, folder, null);
       return;
@@ -390,6 +395,11 @@ async function handleApiRequest(
     return;
   }
 
+  if (method === "POST" && url.pathname === "/api/integrations/plaud/run") {
+    await handleApiPlaudRun(response);
+    return;
+  }
+
   const apiFolderRoute = parseApiResourceRoute(url.pathname, "folders");
 
   if (apiFolderRoute !== null) {
@@ -449,6 +459,19 @@ async function handleApiCreateTodo(request: IncomingMessage, response: ServerRes
   }
 
   sendJsonValue(response, 201, { item: createTodoItem(user.id, todoResult.value.title, todoResult.value.body, folderId) });
+}
+
+async function handleApiPlaudRun(response: ServerResponse): Promise<void> {
+  try {
+    await triggerPlaudTranscriberRun();
+  } catch (error) {
+    sendJsonValue(response, 502, {
+      error: error instanceof Error ? error.message : "Could not trigger PLAUD sync.",
+    });
+    return;
+  }
+
+  sendJsonValue(response, 202, { accepted: true });
 }
 
 async function handleApiUpdateTodo(

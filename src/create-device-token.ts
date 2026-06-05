@@ -1,3 +1,5 @@
+import "dotenv/config";
+
 import { argv, exit } from "node:process";
 
 import { createDeviceToken, findOrCreateUserByEmail, initializeDatabase } from "./db.js";

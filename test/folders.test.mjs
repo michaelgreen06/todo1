@@ -253,7 +253,7 @@ test("folder hierarchy and inbox", async (suite) => {
     });
   });
 
-  await suite.test("renders default Active filter and preserves multi-status folder navigation", async () => {
+  await suite.test("serves folder shell and preserves multi-status folder API filtering", async () => {
     await withDatabaseAsync(async () => {
       initializeDatabase();
       const user = findOrCreateUserByEmail("render@example.com");
@@ -268,14 +268,26 @@ test("folder hierarchy and inbox", async (suite) => {
 
       const defaultResponse = await sendRequest({ method: "GET", url: `/folders/${folder.id}`, headers: { cookie } });
       assert.equal(defaultResponse.statusCode, 200);
-      assert.match(defaultResponse.body, /Active visible/u);
-      assert.doesNotMatch(defaultResponse.body, /Archived hidden by default/u);
+      assert.match(defaultResponse.body, /<div id="root"><\/div>/u);
+      assert.doesNotMatch(defaultResponse.body, /Active visible/u);
 
-      const query = `status=${encodeURIComponent(activeId)}&status=${encodeURIComponent(archivedId)}`;
-      const filteredResponse = await sendRequest({ method: "GET", url: `/folders/${folder.id}?${query}`, headers: { cookie } });
-      assert.equal(filteredResponse.statusCode, 200);
-      assert.match(filteredResponse.body, /Archived hidden by default/u);
-      assert.match(filteredResponse.body, new RegExp(`/\\?status=${activeId}&amp;status=${archivedId}`, "u"));
+      const defaultViewResponse = await sendJsonRequest({
+        method: "POST",
+        url: "/api/workspace/view",
+        cookie,
+        body: { folderId: folder.id, statusIds: null },
+      });
+      assert.equal(defaultViewResponse.statusCode, 200);
+      assert.deepEqual(JSON.parse(defaultViewResponse.body).workspace.todos.map((todo) => todo.id), [active.id]);
+
+      const filteredViewResponse = await sendJsonRequest({
+        method: "POST",
+        url: "/api/workspace/view",
+        cookie,
+        body: { folderId: folder.id, statusIds: [activeId, archivedId] },
+      });
+      assert.equal(filteredViewResponse.statusCode, 200);
+      assert.deepEqual(JSON.parse(filteredViewResponse.body).workspace.todos.map((todo) => todo.id).sort(), [active.id, archived.id].sort());
       assert.equal(listTodoItems(user.id, folder.id, [activeId]).map((item) => item.id)[0], active.id);
     });
   });

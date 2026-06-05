@@ -125,6 +125,10 @@ export type ReorderItemInput = {
 };
 
 type UnknownRecord = Readonly<Record<string, unknown>>;
+type SqliteExecOptions = {
+  readonly encoding: "utf8";
+  readonly input: string;
+};
 
 const SQLITE_BIN = "/usr/bin/sqlite3";
 const ITEM_KIND = "todo";
@@ -1000,13 +1004,19 @@ function sqlList(values: ReadonlyArray<string>): string {
 }
 
 function executeSql(statement: string): void {
-  execFileSync(SQLITE_BIN, [getTodoDatabasePath(), `PRAGMA foreign_keys = ON;\n${statement}`], { encoding: "utf8" });
+  const options: SqliteExecOptions = {
+    encoding: "utf8",
+    input: `PRAGMA foreign_keys = ON;\n${statement}`,
+  };
+  execFileSync(SQLITE_BIN, [getTodoDatabasePath()], options);
 }
 
 function queryRows(statement: string): Array<UnknownRecord> {
-  const output = execFileSync(SQLITE_BIN, ["-json", getTodoDatabasePath(), `PRAGMA foreign_keys = ON;\n${statement}`], {
+  const options: SqliteExecOptions = {
     encoding: "utf8",
-  });
+    input: `PRAGMA foreign_keys = ON;\n${statement}`,
+  };
+  const output = execFileSync(SQLITE_BIN, ["-json", getTodoDatabasePath()], options);
   const trimmedOutput = output.trim();
 
   if (trimmedOutput.length === 0) {

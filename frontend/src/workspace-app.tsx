@@ -12,6 +12,7 @@ import {
   moveTodo,
   renameFolder,
   reorderTodos,
+  triggerPlaudSync,
   updateTodo,
 } from "./workspace-api";
 import {
@@ -19,6 +20,7 @@ import {
   readStoredSelection,
   storeScrollY,
   storeSelection,
+  updateFolderUrl,
 } from "./workspace-storage";
 import type { DialogState, EditDraft, Folder, Status, TodoItem, WorkspaceSelection, WorkspaceView } from "./workspace-types";
 
@@ -92,6 +94,7 @@ export function WorkspaceApp(): ReactElement {
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft>({ title: "", body: "", folderId: "" });
   const [formStatus, setFormStatus] = useState<FormStatus>(emptyFormStatus);
+  const [isTriggeringPlaudSync, setIsTriggeringPlaudSync] = useState(false);
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
   const [dragOrder, setDragOrder] = useState<ReadonlyArray<TodoItem> | null>(null);
   const restoredScrollRef = useRef(false);
@@ -153,6 +156,7 @@ export function WorkspaceApp(): ReactElement {
 
   useEffect(() => {
     storeSelection(selection);
+    updateFolderUrl(selection.folderId);
     selectionRef.current = selection;
   }, [selection]);
 
@@ -234,6 +238,22 @@ export function WorkspaceApp(): ReactElement {
       folderId: nextWorkspace.folder?.id ?? null,
       statusIds: nextWorkspace.selectedStatusIds,
     });
+  }
+
+  async function runPlaudSyncNow(): Promise<void> {
+    setError(null);
+    setIsTriggeringPlaudSync(true);
+
+    try {
+      await triggerPlaudSync();
+    } catch (runError: unknown) {
+      setError(errorMessage(runError, "Could not trigger PLAUD sync."));
+      setIsTriggeringPlaudSync(false);
+      return;
+    }
+
+    setError("PLAUD sync requested. Railway is starting the transcriber now.");
+    setIsTriggeringPlaudSync(false);
   }
 
   function clearTouchLongPress(): void {
@@ -621,9 +641,19 @@ export function WorkspaceApp(): ReactElement {
           <p className="eyebrow">Signed in as</p>
           <p className="user-email">{workspace.user.email}</p>
         </div>
-        <form action="/logout" method="post">
-          <button type="submit" className="secondary">Log out</button>
-        </form>
+        <div className="todo-actions">
+          <button
+            type="button"
+            className="secondary"
+            disabled={isTriggeringPlaudSync}
+            onClick={() => { void runPlaudSyncNow(); }}
+          >
+            {isTriggeringPlaudSync ? "Starting PLAUD sync..." : "Run PLAUD sync now"}
+          </button>
+          <form action="/logout" method="post">
+            <button type="submit" className="secondary">Log out</button>
+          </form>
+        </div>
       </header>
       <div className="workspace">
         <aside className="panel sidebar" aria-labelledby="folder-navigation-heading">

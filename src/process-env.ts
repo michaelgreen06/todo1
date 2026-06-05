@@ -75,6 +75,22 @@ export function getPublicBaseUrl(): string | null {
   return normalizeBaseUrl(url);
 }
 
+export function getPlaudRailwayProjectId(): string {
+  return requireNonEmptyEnv("PLAUD_RAILWAY_PROJECT_ID");
+}
+
+export function getPlaudRailwayEnvironmentId(): string {
+  return requireNonEmptyEnv("PLAUD_RAILWAY_ENVIRONMENT_ID");
+}
+
+export function getPlaudRailwayServiceId(): string {
+  return requireNonEmptyEnv("PLAUD_RAILWAY_SERVICE_ID");
+}
+
+export function getPlaudRailwayProjectToken(): string {
+  return requireNonEmptyEnv("PLAUD_RAILWAY_API_TOKEN");
+}
+
 function parsePublicBaseUrl(baseUrl: string): URL {
   let parsedUrl: URL;
 
@@ -105,4 +121,20 @@ function parsePublicBaseUrl(baseUrl: string): URL {
 
 function normalizeBaseUrl(url: URL): string {
   return url.origin;
+}
+
+function requireNonEmptyEnv(name: string): string {
+  const configuredValue = env[name];
+
+  if (configuredValue === undefined) {
+    throw new Error(`${name} must be set.`);
+  }
+
+  const value = configuredValue.trim();
+
+  if (value.length === 0) {
+    throw new Error(`${name} must not be empty.`);
+  }
+
+  return value;
 }
