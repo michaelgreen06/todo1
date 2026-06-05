@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { generateKeyBetween } from "fractional-indexing";
 
+import { routeCaptureText } from "./capture-router.js";
 import { getTodoDatabasePath } from "./process-env.js";
 
 export const STATUS_CATEGORIES = {
@@ -430,7 +431,10 @@ export function routeCaptureForMvp(deviceToken: DeviceToken, input: CaptureInput
   };
   const itemId = globalThis.crypto.randomUUID();
   const historyId = globalThis.crypto.randomUUID();
-  const todoRank = generateTopTodoRank(deviceToken.userId, null);
+  const route = routeCaptureText(input.text);
+  const routeFolder = route.folderPath === null ? null : createFolderPath(deviceToken.userId, route.folderPath);
+  const routeNodeId = routeFolder === null ? null : routeFolder.id;
+  const todoRank = generateTopTodoRank(deviceToken.userId, routeNodeId);
   const captureInsert = tableHasColumn("captures", "transcript")
     ? `INSERT OR IGNORE INTO captures (
       id, user_id, device_token_id, client_capture_id, text, transcript, captured_at, metadata_json, created_at
@@ -454,8 +458,8 @@ export function routeCaptureForMvp(deviceToken: DeviceToken, input: CaptureInput
       todo_rank, todo_rank_changed_at, created_at, updated_at
     )
     SELECT
-      ${sql(itemId)}, ${sql(capture.userId)}, NULL, ${sql(defaultStatus.id)}, ${sql(ITEM_KIND)}, NULL,
-      ${sql(capture.text)}, ${sql(capture.id)}, ${sql(capture.createdAt)}, ${sql(todoRank)}, NULL,
+      ${sql(itemId)}, ${sql(capture.userId)}, ${sql(routeNodeId)}, ${sql(defaultStatus.id)}, ${sql(ITEM_KIND)}, ${sql(route.title)},
+      ${sql(route.body)}, ${sql(capture.id)}, ${sql(capture.createdAt)}, ${sql(todoRank)}, NULL,
       ${sql(capture.createdAt)}, ${sql(capture.createdAt)}
     FROM captures
     WHERE id = ${sql(capture.id)};

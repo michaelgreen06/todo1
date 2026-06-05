@@ -10,6 +10,7 @@ import { TextEncoder } from "node:util";
 
 import {
   createDeviceToken,
+  createFolderPath,
   createTodoItem,
   findOrCreateUserByEmail,
   initializeDatabase,
@@ -401,7 +402,7 @@ test("unified capture server MVP", async (suite) => {
 
       const response = await postCapture(`Bearer ${rawToken}`, {
         ...validCapture,
-        text: "x".repeat(100_000),
+        text: "x".repeat(1_050_000),
       });
 
       assert.equal(response.statusCode, 400);
@@ -465,6 +466,87 @@ test("unified capture server MVP", async (suite) => {
       assert.equal(queryRows(databasePath, "SELECT COUNT(*) AS count FROM items;")[0]?.count, 2);
       assert.equal(queryRows(databasePath, "SELECT COUNT(*) AS count FROM item_status_changes;")[0]?.count, 2);
       assert.equal(queryRows(databasePath, "SELECT text FROM captures;")[0]?.text, validCapture.text);
+    });
+  });
+
+  await suite.test("routes spoken list captures into Errands list folders and reuses existing folders", async () => {
+    await withDatabaseAsync(async (databasePath) => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("list-route@example.com");
+      const existingCostco = createFolderPath(user.id, ["Errands", "Costco"]);
+      const rawToken = "list-route-token";
+      createDeviceToken(user.id, "Michael phone", hashRawToken(rawToken));
+
+      const initialResponse = await postCapture(`Bearer ${rawToken}`, {
+        ...validCapture,
+        client_capture_id: "7f0d5e94-3d3f-44b7-a60a-cc1d6a989f5d",
+        text: "add peanut butter to my costco list",
+      });
+      assert.equal(initialResponse.statusCode, 201);
+      const initialBody = JSON.parse(initialResponse.body);
+      assert.equal(initialBody.duplicate, false);
+
+      const routedRows = queryRows(databasePath, `
+        SELECT items.node_id, items.title, items.body, items.source_capture_id
+        FROM items
+        WHERE items.id = '${initialBody.routed_item_id}';
+      `);
+      assert.deepEqual(routedRows, [{
+        node_id: existingCostco.id,
+        title: null,
+        body: "peanut butter",
+        source_capture_id: initialBody.capture_id,
+      }]);
+      assert.equal(queryRows(databasePath, `SELECT COUNT(*) AS count FROM nodes WHERE user_id = '${user.id}';`)[0]?.count, 2);
+
+      const replayResponse = await postCapture(`Bearer ${rawToken}`, {
+        ...validCapture,
+        client_capture_id: "7f0d5e94-3d3f-44b7-a60a-cc1d6a989f5d",
+        text: "add something else to my costco list",
+      });
+      assert.equal(replayResponse.statusCode, 201);
+      assert.deepEqual(JSON.parse(replayResponse.body), {
+        capture_id: initialBody.capture_id,
+        routed_item_id: initialBody.routed_item_id,
+        duplicate: true,
+      });
+      assert.equal(queryRows(databasePath, "SELECT COUNT(*) AS count FROM captures;")[0]?.count, 1);
+      assert.equal(queryRows(databasePath, "SELECT COUNT(*) AS count FROM items;")[0]?.count, 1);
+      assert.equal(queryRows(databasePath, `SELECT COUNT(*) AS count FROM nodes WHERE user_id = '${user.id}';`)[0]?.count, 2);
+    });
+  });
+
+  await suite.test("routes agent captures into a reused top-level Agent folder", async () => {
+    await withDatabaseAsync(async (databasePath) => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("agent-route@example.com");
+      const existingAgent = createFolderPath(user.id, ["agent"]);
+      const rawToken = "agent-route-token";
+      createDeviceToken(user.id, "Michael phone", hashRawToken(rawToken));
+
+      const response = await postCapture(`Bearer ${rawToken}`, {
+        ...validCapture,
+        client_capture_id: "69ec2fb7-d7f4-4d2e-8ea4-d0829ba97456",
+        text: "agent, search facebook marketplace for swingtop bottles",
+      });
+      assert.equal(response.statusCode, 201);
+      const body = JSON.parse(response.body);
+      assert.equal(body.duplicate, false);
+
+      assert.deepEqual(queryRows(databasePath, `
+        SELECT items.node_id, items.title, items.body, items.source_capture_id
+        FROM items
+        WHERE items.id = '${body.routed_item_id}';
+      `), [{
+        node_id: existingAgent.id,
+        title: null,
+        body: "search facebook marketplace for swingtop bottles",
+        source_capture_id: body.capture_id,
+      }]);
+      assert.deepEqual(queryRows(databasePath, `SELECT name, parent_id FROM nodes WHERE user_id = '${user.id}';`), [{
+        name: "agent",
+        parent_id: null,
+      }]);
     });
   });
 });
