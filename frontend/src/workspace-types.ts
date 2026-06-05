@@ -67,6 +67,12 @@ export type EditDraft = {
 export type DialogState =
   | { readonly type: "create" }
   | { readonly type: "status"; readonly item: TodoItem }
+  | {
+      readonly type: "bulk-status";
+      readonly items: ReadonlyArray<TodoItem>;
+      readonly itemIndex: number;
+      readonly statusId: string | null;
+    }
   | { readonly type: "move"; readonly item: TodoItem }
   | { readonly type: "bulk-move" }
   | null;

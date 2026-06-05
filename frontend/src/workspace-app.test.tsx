@@ -246,6 +246,50 @@ describe("WorkspaceApp", () => {
     expect(requests).toContain("POST /api/workspace/view");
   });
 
+  it("changes selected item statuses with a separate note for each item", async () => {
+    const user = userEvent.setup();
+    const requests: Array<{ readonly path: string; readonly body: string }> = [];
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const path = input.toString();
+      requests.push({ path, body: typeof init?.body === "string" ? init.body : "" });
+
+      if (path.endsWith("/status")) {
+        return jsonResponse({ item: { ...inboxItem, statusId: "completed", statusName: "Completed", statusCategory: "completed" } });
+      }
+
+      return jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem, secondItem] }) });
+    };
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
+    await user.click(screen.getByLabelText("Select all"));
+    await user.click(screen.getByRole("button", { name: "Change status" }));
+    expect(screen.getByRole("heading", { name: "Change selected statuses" })).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Status"), "completed");
+    await user.click(screen.getByRole("button", { name: "Continue to notes" }));
+
+    expect(screen.getByRole("heading", { name: "Note for item 1 of 2" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText(/Note/u), "First note");
+    await user.click(screen.getByRole("button", { name: "Save and continue" }));
+
+    expect(await screen.findByRole("heading", { name: "Note for item 2 of 2" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText(/Note/u), "Second note");
+    await user.click(screen.getByRole("button", { name: "Save statuses" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+    expect(requests).toContainEqual({
+      path: "/api/todos/todo-1/status",
+      body: JSON.stringify({ statusId: "completed", note: "First note" }),
+    });
+    expect(requests).toContainEqual({
+      path: "/api/todos/todo-2/status",
+      body: JSON.stringify({ statusId: "completed", note: "Second note" }),
+    });
+  });
+
   it("renders drag handles as buttons", async () => {
     globalThis.fetch = async (): Promise<Response> => jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem, secondItem] }) });
 

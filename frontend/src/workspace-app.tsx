@@ -520,6 +520,60 @@ export function WorkspaceApp(): ReactElement {
     }
   }
 
+  async function saveBulkStatus(event: FormEvent<HTMLFormElement>, state: Extract<DialogState, { readonly type: "bulk-status" }>): Promise<void> {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+
+    if (state.statusId === null) {
+      const statusId = getFormString(form, "statusId");
+      const pendingItems = state.items.filter((item) => item.statusId !== statusId);
+
+      if (pendingItems.length === 0) {
+        setSelectedItemIds([]);
+        setDialog(null);
+        setFormStatus(emptyFormStatus);
+        return;
+      }
+
+      setDialog({ type: "bulk-status", items: pendingItems, itemIndex: 0, statusId });
+      setFormStatus(emptyFormStatus);
+      return;
+    }
+
+    const item = state.items[state.itemIndex];
+
+    if (item === undefined) {
+      setSelectedItemIds([]);
+      setDialog(null);
+      setFormStatus(emptyFormStatus);
+      await refreshCurrentWorkspace();
+      return;
+    }
+
+    setFormStatus({ error: null, isSaving: true });
+
+    try {
+      await changeStatus(item.id, {
+        statusId: state.statusId,
+        note: getFormString(form, "note"),
+      });
+
+      const nextIndex = state.itemIndex + 1;
+
+      if (nextIndex >= state.items.length) {
+        setSelectedItemIds([]);
+        setDialog(null);
+        await refreshCurrentWorkspace();
+      } else {
+        setDialog({ ...state, itemIndex: nextIndex });
+      }
+
+      setFormStatus(emptyFormStatus);
+    } catch (statusError: unknown) {
+      setFormStatus({ error: errorMessage(statusError, "Could not save status."), isSaving: false });
+    }
+  }
+
   async function saveMove(event: FormEvent<HTMLFormElement>, item: TodoItem | null): Promise<void> {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -728,6 +782,17 @@ export function WorkspaceApp(): ReactElement {
                 type="button"
                 className="secondary"
                 disabled={selectedItemIds.length === 0}
+                onClick={() => {
+                  setDialog({ type: "bulk-status", items: selectedItems, itemIndex: 0, statusId: null });
+                  setFormStatus(emptyFormStatus);
+                }}
+              >
+                Change status
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={selectedItemIds.length === 0}
                 onClick={() => { setDialog({ type: "bulk-move" }); }}
               >
                 Move selected
@@ -778,6 +843,9 @@ export function WorkspaceApp(): ReactElement {
           ) : null}
           {dialog.type === "status" ? (
             <StatusDialog item={dialog.item} statuses={workspace.statuses} isSaving={formStatus.isSaving} onSubmit={saveStatus} />
+          ) : null}
+          {dialog.type === "bulk-status" ? (
+            <BulkStatusDialog state={dialog} statuses={workspace.statuses} isSaving={formStatus.isSaving} onSubmit={saveBulkStatus} />
           ) : null}
           {dialog.type === "move" ? (
             <MoveDialog item={dialog.item} folders={workspace.folders} selectedCount={1} isSaving={formStatus.isSaving} onSubmit={saveMove} />
@@ -1115,6 +1183,43 @@ function StatusDialog(props: {
       <label htmlFor="note">Note <span className="muted">(optional)</span></label>
       <textarea id="note" name="note" rows={4} maxLength={2000} />
       <button type="submit" disabled={props.isSaving}>Save status</button>
+    </form>
+  );
+}
+
+function BulkStatusDialog(props: {
+  readonly state: Extract<DialogState, { readonly type: "bulk-status" }>;
+  readonly statuses: ReadonlyArray<Status>;
+  readonly isSaving: boolean;
+  readonly onSubmit: (event: FormEvent<HTMLFormElement>, state: Extract<DialogState, { readonly type: "bulk-status" }>) => Promise<void>;
+}): ReactElement {
+  if (props.state.statusId === null) {
+    return (
+      <form className="stack" onSubmit={(event) => { void props.onSubmit(event, props.state); }}>
+        <h1>Change selected statuses</h1>
+        <p className="muted">{props.state.items.length.toString()} selected</p>
+        <label htmlFor="bulk-status-id">Status</label>
+        <select id="bulk-status-id" name="statusId" required>
+          {props.statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}
+        </select>
+        <button type="submit" disabled={props.isSaving}>Continue to notes</button>
+      </form>
+    );
+  }
+
+  const item = props.state.items[props.state.itemIndex];
+  const selectedStatus = props.statuses.find((status) => status.id === props.state.statusId);
+
+  return (
+    <form key={item?.id ?? props.state.itemIndex} className="stack" onSubmit={(event) => { void props.onSubmit(event, props.state); }}>
+      <h1>Note for item {(props.state.itemIndex + 1).toString()} of {props.state.items.length.toString()}</h1>
+      <p className="muted">Changing to {selectedStatus?.name ?? "selected status"}</p>
+      <p className="muted">{item?.title ?? item?.body ?? "Selected item"}</p>
+      <label htmlFor="bulk-note">Note <span className="muted">(optional)</span></label>
+      <textarea id="bulk-note" name="note" rows={4} maxLength={2000} autoFocus />
+      <button type="submit" disabled={props.isSaving}>
+        {props.state.itemIndex + 1 >= props.state.items.length ? "Save statuses" : "Save and continue"}
+      </button>
     </form>
   );
 }
