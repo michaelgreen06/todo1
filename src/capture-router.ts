@@ -28,6 +28,7 @@ const AGENT_PREFIX_PATTERN = /^\s*agent\b[\s,.:;!?-]*/iu;
 const LIST_COMMAND_PATTERN = /^\s*add\s+(.+?)\s+to\s+(.+?)\s+list\s*[.!?]*\s*$/iu;
 const ISSUE_COMMAND_PATTERN = /^\s*add\s+an\s+issue\s+for\s+(.+?)\s+that\s+(.+?)\s*$/iu;
 const MEETING_NOTE_COMMAND_PATTERN = /^\s*add\s+meeting\s+note\s+to\s+(.+?)\s+that\s+(.+?)\s*$/iu;
+const MESSAGE_COMMAND_PATTERN = /^\s*message\s+(.+?)\s*$/iu;
 
 export const CAPTURE_PROMPT_RULES: ReadonlyArray<CapturePromptRule> = [
   {
@@ -54,6 +55,12 @@ export const CAPTURE_PROMPT_RULES: ReadonlyArray<CapturePromptRule> = [
     destination: "Meetings / regen hub",
     itemBody: "ask about the launch checklist",
   },
+  {
+    name: "Message",
+    spokenPattern: "message Sam that I am running ten minutes late",
+    destination: "Messages",
+    itemBody: "Sam that I am running ten minutes late",
+  },
 ];
 
 const CAPTURE_RULES: ReadonlyArray<CaptureRule> = [
@@ -61,6 +68,7 @@ const CAPTURE_RULES: ReadonlyArray<CaptureRule> = [
   routeListCommand,
   routeIssueCommand,
   routeMeetingNoteCommand,
+  routeMessageCommand,
 ];
 
 export function routeCaptureText(text: string): CaptureRoute {
@@ -169,6 +177,28 @@ function routeMeetingNoteCommand(text: string): FolderCaptureRoute | null {
     body,
     folderPath: ["Meetings", folder],
     ruleName: "meeting-note-command",
+  };
+}
+
+function routeMessageCommand(text: string): FolderCaptureRoute | null {
+  const match = MESSAGE_COMMAND_PATTERN.exec(text);
+
+  if (match === null) {
+    return null;
+  }
+
+  const body = collapseWhitespace(match[1] ?? "");
+
+  if (body.length === 0) {
+    return null;
+  }
+
+  return {
+    kind: "folder",
+    title: null,
+    body,
+    folderPath: ["Messages"],
+    ruleName: "message-command",
   };
 }
 

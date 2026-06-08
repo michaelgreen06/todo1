@@ -62,6 +62,16 @@ test("capture router", async (suite) => {
     });
   });
 
+  await suite.test("routes message commands to Messages", () => {
+    assert.deepEqual(routeCaptureText("message Sam that I am running ten minutes late"), {
+      kind: "folder",
+      title: null,
+      body: "Sam that I am running ten minutes late",
+      folderPath: ["Messages"],
+      ruleName: "message-command",
+    });
+  });
+
   await suite.test("leaves malformed list commands in the inbox", () => {
     for (const text of [
       "add to my costco list",

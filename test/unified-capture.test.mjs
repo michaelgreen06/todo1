@@ -596,6 +596,35 @@ test("unified capture server MVP", async (suite) => {
       ]);
     });
   });
+
+  await suite.test("routes message captures into Messages", async () => {
+    await withDatabaseAsync(async (databasePath) => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("message-route@example.com");
+      const rawToken = "message-route-token";
+      createDeviceToken(user.id, "Michael phone", hashRawToken(rawToken));
+
+      const response = await postCapture(`Bearer ${rawToken}`, {
+        ...validCapture,
+        client_capture_id: "d6246e69-7d4c-41f5-90d0-741865da4a29",
+        text: "message Sam that I am running ten minutes late",
+      });
+      assert.equal(response.statusCode, 201);
+      const body = JSON.parse(response.body);
+
+      assert.deepEqual(queryRows(databasePath, `
+        SELECT nodes.name AS folder_name, items.title, items.body, items.source_capture_id
+        FROM items
+        JOIN nodes ON nodes.id = items.node_id
+        WHERE items.id = '${body.routed_item_id}';
+      `), [{
+        folder_name: "Messages",
+        title: null,
+        body: "Sam that I am running ten minutes late",
+        source_capture_id: body.capture_id,
+      }]);
+    });
+  });
 });
 
 function withDatabase(run) {
