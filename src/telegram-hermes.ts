@@ -54,10 +54,24 @@ async function callTelegramApi(
   const parsedResponse: unknown = JSON.parse(responseText);
 
   if (!response.ok) {
-    throw new Error(`Telegram ${method} failed with HTTP ${response.status.toString()}.`);
+    throw new Error(`Telegram ${method} failed with HTTP ${response.status.toString()}: ${describeTelegramError(parsedResponse)}`);
   }
 
   return parsedResponse;
+}
+
+function describeTelegramError(response: unknown): string {
+  if (!isRecord(response)) {
+    return "unexpected response";
+  }
+
+  const description = response["description"];
+
+  if (typeof description === "string" && description.length > 0) {
+    return description;
+  }
+
+  return JSON.stringify(response);
 }
 
 function makeTopicName(routedBody: string): string {
