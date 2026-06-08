@@ -39,8 +39,17 @@ import {
   renderPromptsPage,
   renderTodoPage,
 } from "./html.js";
-import { getHost, getPort, getPublicBaseUrl } from "./process-env.js";
+import {
+  getHost,
+  getPort,
+  getPublicBaseUrl,
+  getTelegramHermesBotUsername,
+  getTelegramHermesChatId,
+  getTelegramServerBotToken,
+  isTelegramHermesEnabled,
+} from "./process-env.js";
 import { triggerPlaudTranscriberRun } from "./railway.js";
+import { dispatchCaptureToTelegramHermes } from "./telegram-hermes.js";
 import { hashRawToken } from "./token.js";
 import {
   validateCaptureInput,
@@ -55,6 +64,7 @@ import {
 import type { Folder, Status, User } from "./db.js";
 import type { WorkspaceView, WorkspaceViewRequest } from "./api-types.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { TelegramHermesConfig } from "./telegram-hermes.js";
 
 const SESSION_COOKIE_NAME = "todo_session";
 const MAX_CAPTURE_REQUEST_BODY_BYTES = 1024 * 1024;
@@ -355,11 +365,34 @@ async function handleCaptureIngestion(request: IncomingMessage, response: Server
   }
 
   const result = routeCaptureForMvp(deviceToken, captureResult.value);
+
+  if (!result.duplicate && result.routeRuleName === "agent-prefix") {
+    await dispatchAgentCaptureToTelegram(result.routedBody);
+  }
+
   sendJson(response, 201, JSON.stringify({
     capture_id: result.captureId,
     routed_item_id: result.routedItemId,
     duplicate: result.duplicate,
   }));
+}
+
+async function dispatchAgentCaptureToTelegram(routedBody: string): Promise<void> {
+  if (!isTelegramHermesEnabled()) {
+    return;
+  }
+
+  const config: TelegramHermesConfig = {
+    botToken: getTelegramServerBotToken(),
+    chatId: getTelegramHermesChatId(),
+    botUsername: getTelegramHermesBotUsername(),
+  };
+
+  try {
+    await dispatchCaptureToTelegramHermes(config, routedBody);
+  } catch (error) {
+    console.error("Telegram Hermes dispatch failed.", error);
+  }
 }
 
 async function handleApiRequest(

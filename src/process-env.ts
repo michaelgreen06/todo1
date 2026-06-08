@@ -91,6 +91,28 @@ export function getPlaudRailwayProjectToken(): string {
   return requireNonEmptyEnv("PLAUD_RAILWAY_API_TOKEN");
 }
 
+export function isTelegramHermesEnabled(): boolean {
+  const configuredValue = env["TELEGRAM_HERMES_ENABLED"];
+
+  if (configuredValue === undefined) {
+    return false;
+  }
+
+  return configuredValue.trim().toLowerCase() === "true";
+}
+
+export function getTelegramServerBotToken(): string {
+  return requireNonEmptyEnv("TELEGRAM_SERVER_BOT_TOKEN");
+}
+
+export function getTelegramHermesChatId(): string {
+  return requireNonEmptyEnv("TELEGRAM_HERMES_CHAT_ID");
+}
+
+export function getTelegramHermesBotUsername(): string {
+  return normalizeTelegramUsername(requireNonEmptyEnv("TELEGRAM_HERMES_BOT_USERNAME"));
+}
+
 function parsePublicBaseUrl(baseUrl: string): URL {
   let parsedUrl: URL;
 
@@ -137,4 +159,14 @@ function requireNonEmptyEnv(name: string): string {
   }
 
   return value;
+}
+
+function normalizeTelegramUsername(username: string): string {
+  const normalizedUsername = username.replace(/^@+/u, "").trim();
+
+  if (normalizedUsername.length === 0) {
+    throw new Error("TELEGRAM_HERMES_BOT_USERNAME must not be empty.");
+  }
+
+  return normalizedUsername;
 }

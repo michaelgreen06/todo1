@@ -68,6 +68,8 @@ export type CaptureIngestionResult = {
   readonly captureId: string;
   readonly routedItemId: string;
   readonly duplicate: boolean;
+  readonly routeRuleName: string | null;
+  readonly routedBody: string;
 };
 
 export type Status = {
@@ -891,7 +893,15 @@ function getCaptureIngestionResult(capture: Capture, duplicate: boolean): Captur
     captureId: capture.id,
     routedItemId: getRequiredString(itemRow, "id"),
     duplicate,
+    routeRuleName: getCaptureRouteRuleName(capture.text),
+    routedBody: routeCaptureText(capture.text).body,
   };
+}
+
+function getCaptureRouteRuleName(text: string): string | null {
+  const route = routeCaptureText(text);
+
+  return route.kind === "folder" ? route.ruleName : null;
 }
 
 function findStatusForUser(statusId: string, userId: string): Status | null {

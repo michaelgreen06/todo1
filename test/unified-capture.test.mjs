@@ -20,7 +20,9 @@ import {
   getHost,
   getPort,
   getPublicBaseUrl,
+  getTelegramHermesBotUsername,
   getTodoDatabasePath,
+  isTelegramHermesEnabled,
 } from "../dist/process-env.js";
 import { handleRequest } from "../dist/server.js";
 import { hashRawToken } from "../dist/token.js";
@@ -63,6 +65,16 @@ test("unified capture server MVP", async (suite) => {
       assert.equal(getHost(), "0.0.0.0");
       assert.equal(getPort(), 4312);
       assert.equal(getPublicBaseUrl(), "https://todo.example.com");
+    });
+  });
+
+  await suite.test("reads Telegram Hermes configuration when enabled", () => {
+    withEnvironment({
+      TELEGRAM_HERMES_ENABLED: "true",
+      TELEGRAM_HERMES_BOT_USERNAME: "@HermesBot",
+    }, () => {
+      assert.equal(isTelegramHermesEnabled(), true);
+      assert.equal(getTelegramHermesBotUsername(), "HermesBot");
     });
   });
 
@@ -469,6 +481,159 @@ test("unified capture server MVP", async (suite) => {
     });
   });
 
+  await suite.test("does not dispatch agent captures to Telegram when Telegram is disabled", async () => {
+    await withDatabaseAsync(async (databasePath) => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("telegram-disabled@example.com");
+      const rawToken = "telegram-disabled-token";
+      createDeviceToken(user.id, "Michael phone", hashRawToken(rawToken));
+
+      await withEnvironment({ TELEGRAM_HERMES_ENABLED: undefined }, async () => {
+        await withMockedFetch(async () => {
+          throw new Error("Telegram fetch should not be called.");
+        }, async (calls) => {
+          const response = await postCapture(`Bearer ${rawToken}`, {
+            ...validCapture,
+            client_capture_id: "8af0c262-d85d-4ec5-88b7-3fd053b1a2b4",
+            text: "agent, reconcile missing receipt totals",
+          });
+
+          assert.equal(response.statusCode, 201);
+          assert.equal(JSON.parse(response.body).duplicate, false);
+          assert.equal(calls.length, 0);
+          assert.equal(queryRows(databasePath, "SELECT COUNT(*) AS count FROM items;")[0]?.count, 1);
+        });
+      });
+    });
+  });
+
+  await suite.test("dispatches new agent captures to Telegram Hermes when enabled", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("telegram-enabled@example.com");
+      const rawToken = "telegram-enabled-token";
+      createDeviceToken(user.id, "Michael phone", hashRawToken(rawToken));
+
+      await withEnvironment({
+        TELEGRAM_HERMES_ENABLED: "true",
+        TELEGRAM_SERVER_BOT_TOKEN: "server-token",
+        TELEGRAM_HERMES_CHAT_ID: "-100123",
+        TELEGRAM_HERMES_BOT_USERNAME: "@HermesBot",
+      }, async () => {
+        await withMockedFetch(async (_call, callNumber) => ({
+          ok: true,
+          status: 200,
+          text: async () => callNumber === 1
+            ? JSON.stringify({ ok: true, result: { message_thread_id: 987 } })
+            : JSON.stringify({ ok: true, result: { message_id: 654 } }),
+        }), async (calls) => {
+          const routedBody = "1234567890123456789012345678901234567890ABCDE";
+          const response = await postCapture(`Bearer ${rawToken}`, {
+            ...validCapture,
+            client_capture_id: "f2d77a9a-3c3a-46d4-8cda-55d5fa10ff84",
+            text: `agent, ${routedBody}`,
+          });
+
+          assert.equal(response.statusCode, 201);
+          assert.equal(JSON.parse(response.body).duplicate, false);
+          assert.equal(calls.length, 2);
+          assert.equal(calls[0]?.url, "https://api.telegram.org/botserver-token/createForumTopic");
+          assert.deepEqual(JSON.parse(calls[0]?.body ?? "{}"), {
+            chat_id: "-100123",
+            name: "1234567890123456789012345678901234567890",
+          });
+          assert.equal(calls[1]?.url, "https://api.telegram.org/botserver-token/sendMessage");
+          assert.deepEqual(JSON.parse(calls[1]?.body ?? "{}"), {
+            chat_id: "-100123",
+            message_thread_id: 987,
+            text: `@HermesBot ${routedBody}`,
+          });
+        });
+      });
+    });
+  });
+
+  await suite.test("logs Telegram failures without failing agent capture", async () => {
+    await withDatabaseAsync(async (databasePath) => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("telegram-failure@example.com");
+      const rawToken = "telegram-failure-token";
+      createDeviceToken(user.id, "Michael phone", hashRawToken(rawToken));
+
+      await withEnvironment({
+        TELEGRAM_HERMES_ENABLED: "true",
+        TELEGRAM_SERVER_BOT_TOKEN: "server-token",
+        TELEGRAM_HERMES_CHAT_ID: "-100123",
+        TELEGRAM_HERMES_BOT_USERNAME: "HermesBot",
+      }, async () => {
+        const capturedErrors = captureConsoleErrors();
+
+        try {
+          await withMockedFetch(async () => ({
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ ok: false }),
+          }), async (calls) => {
+            const response = await postCapture(`Bearer ${rawToken}`, {
+              ...validCapture,
+              client_capture_id: "e3d4fca9-f7b2-49d3-a142-daf3c762c835",
+              text: "agent, send this even if telegram breaks",
+            });
+
+            assert.equal(response.statusCode, 201);
+            assert.equal(JSON.parse(response.body).duplicate, false);
+            assert.equal(calls.length, 1);
+            assert.equal(queryRows(databasePath, "SELECT COUNT(*) AS count FROM items;")[0]?.count, 1);
+            assert.match(capturedErrors.lines.at(-1) ?? "", /Telegram Hermes dispatch failed\./u);
+          });
+        } finally {
+          capturedErrors.restore();
+        }
+      });
+    });
+  });
+
+  await suite.test("does not dispatch duplicate agent capture replays to Telegram", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("telegram-duplicate@example.com");
+      const rawToken = "telegram-duplicate-token";
+      createDeviceToken(user.id, "Michael phone", hashRawToken(rawToken));
+
+      await withEnvironment({
+        TELEGRAM_HERMES_ENABLED: "true",
+        TELEGRAM_SERVER_BOT_TOKEN: "server-token",
+        TELEGRAM_HERMES_CHAT_ID: "-100123",
+        TELEGRAM_HERMES_BOT_USERNAME: "HermesBot",
+      }, async () => {
+        await withMockedFetch(async (_call, callNumber) => ({
+          ok: true,
+          status: 200,
+          text: async () => callNumber % 2 === 1
+            ? JSON.stringify({ ok: true, result: { message_thread_id: 123 } })
+            : JSON.stringify({ ok: true, result: { message_id: 456 } }),
+        }), async (calls) => {
+          const firstResponse = await postCapture(`Bearer ${rawToken}`, {
+            ...validCapture,
+            client_capture_id: "ff769871-35cd-467e-821e-34f1b68fb187",
+            text: "agent, do the thing once",
+          });
+          assert.equal(firstResponse.statusCode, 201);
+          assert.equal(calls.length, 2);
+
+          const replayResponse = await postCapture(`Bearer ${rawToken}`, {
+            ...validCapture,
+            client_capture_id: "ff769871-35cd-467e-821e-34f1b68fb187",
+            text: "agent, do not dispatch replay",
+          });
+          assert.equal(replayResponse.statusCode, 201);
+          assert.equal(JSON.parse(replayResponse.body).duplicate, true);
+          assert.equal(calls.length, 2);
+        });
+      });
+    });
+  });
+
   await suite.test("routes spoken list captures into Errands list folders and reuses existing folders", async () => {
     await withDatabaseAsync(async (databasePath) => {
       initializeDatabase();
@@ -625,6 +790,35 @@ test("unified capture server MVP", async (suite) => {
       }]);
     });
   });
+
+  await suite.test("does not dispatch message captures to Telegram Hermes", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("telegram-message@example.com");
+      const rawToken = "telegram-message-token";
+      createDeviceToken(user.id, "Michael phone", hashRawToken(rawToken));
+
+      await withEnvironment({
+        TELEGRAM_HERMES_ENABLED: "true",
+        TELEGRAM_SERVER_BOT_TOKEN: "server-token",
+        TELEGRAM_HERMES_CHAT_ID: "-100123",
+        TELEGRAM_HERMES_BOT_USERNAME: "HermesBot",
+      }, async () => {
+        await withMockedFetch(async () => {
+          throw new Error("Telegram fetch should not be called for message captures.");
+        }, async (calls) => {
+          const response = await postCapture(`Bearer ${rawToken}`, {
+            ...validCapture,
+            client_capture_id: "fa6e9ff8-07a4-4e35-8432-4420cae5d6f5",
+            text: "message Sam that I am running ten minutes late",
+          });
+
+          assert.equal(response.statusCode, 201);
+          assert.equal(calls.length, 0);
+        });
+      });
+    });
+  });
 });
 
 function withDatabase(run) {
@@ -660,6 +854,10 @@ function withEnvironment(updates, run) {
     HOST: env.HOST,
     PORT: env.PORT,
     PUBLIC_BASE_URL: env.PUBLIC_BASE_URL,
+    TELEGRAM_HERMES_ENABLED: env.TELEGRAM_HERMES_ENABLED,
+    TELEGRAM_SERVER_BOT_TOKEN: env.TELEGRAM_SERVER_BOT_TOKEN,
+    TELEGRAM_HERMES_CHAT_ID: env.TELEGRAM_HERMES_CHAT_ID,
+    TELEGRAM_HERMES_BOT_USERNAME: env.TELEGRAM_HERMES_BOT_USERNAME,
   };
 
   for (const [name, value] of Object.entries(updates)) {
@@ -675,20 +873,14 @@ function withEnvironment(updates, run) {
 
     if (result !== null && typeof result === "object" && "then" in result) {
       return result.finally(() => {
-        restoreEnvironmentValue("HOST", previousValues.HOST);
-        restoreEnvironmentValue("PORT", previousValues.PORT);
-        restoreEnvironmentValue("PUBLIC_BASE_URL", previousValues.PUBLIC_BASE_URL);
+        restoreEnvironment(previousValues);
       });
     }
 
-    restoreEnvironmentValue("HOST", previousValues.HOST);
-    restoreEnvironmentValue("PORT", previousValues.PORT);
-    restoreEnvironmentValue("PUBLIC_BASE_URL", previousValues.PUBLIC_BASE_URL);
+    restoreEnvironment(previousValues);
     return result;
   } catch (error) {
-    restoreEnvironmentValue("HOST", previousValues.HOST);
-    restoreEnvironmentValue("PORT", previousValues.PORT);
-    restoreEnvironmentValue("PUBLIC_BASE_URL", previousValues.PUBLIC_BASE_URL);
+    restoreEnvironment(previousValues);
     throw error;
   }
 }
@@ -706,6 +898,32 @@ function restoreEnvironmentValue(name, previousValue) {
     delete env[name];
   } else {
     env[name] = previousValue;
+  }
+}
+
+function restoreEnvironment(previousValues) {
+  for (const [name, previousValue] of Object.entries(previousValues)) {
+    restoreEnvironmentValue(name, previousValue);
+  }
+}
+
+async function withMockedFetch(handler, run) {
+  const previousFetch = globalThis.fetch;
+  const calls = [];
+
+  globalThis.fetch = async (url, init = {}) => {
+    const call = {
+      url: String(url),
+      body: typeof init.body === "string" ? init.body : "",
+    };
+    calls.push(call);
+    return handler(call, calls.length);
+  };
+
+  try {
+    return await run(calls);
+  } finally {
+    globalThis.fetch = previousFetch;
   }
 }
 
@@ -750,6 +968,22 @@ function captureConsoleLogs() {
     lines,
     restore() {
       globalThis.console.log = previousLog;
+    },
+  };
+}
+
+function captureConsoleErrors() {
+  const lines = [];
+  const previousError = globalThis.console.error;
+
+  globalThis.console.error = (...args) => {
+    lines.push(args.map((value) => String(value)).join(" "));
+  };
+
+  return {
+    lines,
+    restore() {
+      globalThis.console.error = previousError;
     },
   };
 }
