@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -147,6 +148,56 @@ test("folder hierarchy and inbox", async (suite) => {
       const returnedToInbox = listTodoItems(user.id, null, [activeId])[0];
       assert.equal(returnedToInbox?.nodeId, null);
       assert.equal(returnedToInbox?.kind, "reference");
+    });
+  });
+
+  await suite.test("migrates legacy top-level folders into Actions and classifies legacy items as actions", () => {
+    withDatabase((databasePath) => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("legacy-migration@example.com");
+      const activeId = statusId(user.id, "Active");
+      const defaultStatusId = requiredStatusId(listStatuses(user.id), "Active");
+      const timestamp = "2026-06-09T00:00:00.000Z";
+      const legacyRootId = "11111111-1111-4111-8111-111111111111";
+      const legacyChildId = "22222222-2222-4222-8222-222222222222";
+      const legacyItemId = "33333333-3333-4333-8333-333333333333";
+      const inboxItemId = "44444444-4444-4444-8444-444444444444";
+
+      execFileSync("/usr/bin/sqlite3", [databasePath], {
+        encoding: "utf8",
+        input: `PRAGMA foreign_keys = ON;
+BEGIN IMMEDIATE;
+DELETE FROM nodes WHERE user_id = '${user.id}' AND name IN ('Actions', 'Reference');
+INSERT INTO nodes (id, user_id, parent_id, name, kind, created_at, updated_at)
+VALUES
+  ('${legacyRootId}', '${user.id}', NULL, 'Errands', 'folder', '${timestamp}', '${timestamp}'),
+  ('${legacyChildId}', '${user.id}', '${legacyRootId}', 'Costco', 'folder', '${timestamp}', '${timestamp}');
+INSERT INTO items (
+  id, user_id, node_id, status_id, kind, title, body, source_capture_id, status_changed_at,
+  todo_rank, todo_rank_changed_at, created_at, updated_at
+) VALUES
+  ('${legacyItemId}', '${user.id}', '${legacyChildId}', '${defaultStatusId}', 'note', 'Legacy filed', 'Legacy body', NULL, '${timestamp}', 'a0', NULL, '${timestamp}', '${timestamp}'),
+  ('${inboxItemId}', '${user.id}', NULL, '${defaultStatusId}', 'note', 'Legacy inbox', 'Legacy inbox body', NULL, '${timestamp}', 'a1', NULL, '${timestamp}', '${timestamp}');
+COMMIT;`,
+      });
+
+      initializeDatabase();
+
+      const roots = listFolders(user.id, []);
+      const actionsRoot = roots.find((folder) => folder.name === "Actions");
+      const errandsFolder = roots.find((folder) => folder.name === "Errands");
+      const costcoFolder = roots.find((folder) => folder.name === "Costco");
+      assert.notEqual(actionsRoot, undefined);
+      assert.notEqual(errandsFolder, undefined);
+      assert.notEqual(costcoFolder, undefined);
+      assert.equal(errandsFolder.parentId, actionsRoot.id);
+      assert.equal(costcoFolder.parentId, errandsFolder.id);
+      assert.equal(listTodoItems(user.id, costcoFolder.id, [activeId])[0]?.kind, "todo");
+      assert.equal(listTodoItems(user.id, null, [activeId]).find((item) => item.id === inboxItemId)?.kind, "todo");
+      assert.deepEqual(
+        roots.filter((folder) => folder.parentId === null).map((folder) => folder.name),
+        ["Actions", "Reference"],
+      );
     });
   });
 

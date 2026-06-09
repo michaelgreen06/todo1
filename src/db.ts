@@ -302,6 +302,7 @@ export function initializeDatabase(): void {
   `);
 
   backfillMissingTodoRanks();
+  migrateLegacyWorkspaceStructure();
 }
 
 export function findOrCreateUserByEmail(email: string): User {
@@ -1080,6 +1081,112 @@ function backfillMissingTodoRanks(): void {
       WHERE id = ${sql(itemId)} AND todo_rank IS NULL;
     `);
   }
+}
+
+function migrateLegacyWorkspaceStructure(): void {
+  const userRows = queryRows(`
+    SELECT id
+    FROM users
+    ORDER BY created_at ASC, id ASC;
+  `);
+
+  for (const row of userRows) {
+    migrateLegacyWorkspaceStructureForUser(getRequiredString(row, "id"));
+  }
+}
+
+function migrateLegacyWorkspaceStructureForUser(userId: string): void {
+  const roots = ensureWorkspaceRoots(userId);
+  const legacyRoots = queryRows(`
+    SELECT nodes.id, nodes.user_id, nodes.parent_id, nodes.name, nodes.kind,
+      0 AS direct_item_count, nodes.created_at, nodes.updated_at
+    FROM nodes
+    WHERE nodes.user_id = ${sql(userId)}
+      AND nodes.parent_id IS NULL
+      AND nodes.kind = ${sql("folder")}
+      AND nodes.name NOT IN (${sql(RESERVED_ROOT_NAMES.actions)}, ${sql(RESERVED_ROOT_NAMES.reference)})
+    ORDER BY nodes.created_at ASC, nodes.name COLLATE NOCASE ASC;
+  `).map(mapFolder);
+
+  for (const folder of legacyRoots) {
+    mergeFolderIntoParent(userId, folder.id, roots.actions.id);
+  }
+
+  normalizeItemKindsForWorkspace(userId, roots.reference.id);
+}
+
+function mergeFolderIntoParent(userId: string, sourceFolderId: string, targetParentId: string): void {
+  const sourceFolder = findFolderForUser(sourceFolderId, userId);
+
+  if (sourceFolder === null || sourceFolder.id === targetParentId) {
+    return;
+  }
+
+  const duplicateFolder = findSiblingFolder(userId, targetParentId, sourceFolder.name);
+
+  if (duplicateFolder === null) {
+    executeSql(`
+      UPDATE nodes
+      SET parent_id = ${sql(targetParentId)}, updated_at = ${sql(nowIso())}
+      WHERE id = ${sql(sourceFolder.id)} AND user_id = ${sql(userId)};
+    `);
+    return;
+  }
+
+  if (duplicateFolder.id === sourceFolder.id) {
+    return;
+  }
+
+  mergeFolderContents(userId, sourceFolder.id, duplicateFolder.id);
+}
+
+function mergeFolderContents(userId: string, sourceFolderId: string, targetFolderId: string): void {
+  const childFolders = queryRows(`
+    SELECT nodes.id, nodes.user_id, nodes.parent_id, nodes.name, nodes.kind,
+      0 AS direct_item_count, nodes.created_at, nodes.updated_at
+    FROM nodes
+    WHERE nodes.user_id = ${sql(userId)}
+      AND nodes.parent_id = ${sql(sourceFolderId)}
+      AND nodes.kind = ${sql("folder")}
+    ORDER BY nodes.created_at ASC, nodes.name COLLATE NOCASE ASC;
+  `).map(mapFolder);
+
+  for (const childFolder of childFolders) {
+    mergeFolderIntoParent(userId, childFolder.id, targetFolderId);
+  }
+
+  executeSql(`
+    BEGIN IMMEDIATE;
+    UPDATE items
+    SET node_id = ${sql(targetFolderId)}, kind = ${sql(ITEM_KIND_ACTION)}, updated_at = ${sql(nowIso())}
+    WHERE user_id = ${sql(userId)} AND node_id = ${sql(sourceFolderId)};
+    DELETE FROM nodes
+    WHERE id = ${sql(sourceFolderId)} AND user_id = ${sql(userId)};
+    COMMIT;
+  `);
+}
+
+function normalizeItemKindsForWorkspace(userId: string, referenceRootId: string): void {
+  executeSql(`
+    BEGIN IMMEDIATE;
+    WITH RECURSIVE reference_descendants(id) AS (
+      SELECT id
+      FROM nodes
+      WHERE id = ${sql(referenceRootId)} AND user_id = ${sql(userId)} AND kind = ${sql("folder")}
+      UNION ALL
+      SELECT nodes.id
+      FROM nodes
+      JOIN reference_descendants ON reference_descendants.id = nodes.parent_id
+      WHERE nodes.user_id = ${sql(userId)} AND nodes.kind = ${sql("folder")}
+    )
+    UPDATE items
+    SET kind = CASE
+      WHEN node_id IN (SELECT id FROM reference_descendants) THEN ${sql(ITEM_KIND_REFERENCE)}
+      ELSE ${sql(ITEM_KIND_ACTION)}
+    END
+    WHERE user_id = ${sql(userId)};
+    COMMIT;
+  `);
 }
 
 function findInsertionNeighbors(
