@@ -1,7 +1,9 @@
-import type { Folder, Item, Status, User } from "./db.js";
+import type { Folder, Item, Status, User, WorkspaceRoots, WorkspaceViewMode } from "./db.js";
 
 export type WorkspaceView = {
+  readonly view: WorkspaceViewMode;
   readonly user: Pick<User, "email">;
+  readonly roots: WorkspaceRoots;
   readonly folder: Folder | null;
   readonly folders: ReadonlyArray<Folder>;
   readonly ancestors: ReadonlyArray<Folder>;
@@ -12,6 +14,7 @@ export type WorkspaceView = {
 };
 
 export type WorkspaceViewRequest = {
+  readonly view: WorkspaceViewMode;
   readonly folderId: string | null;
   readonly statusIds: ReadonlyArray<string> | null;
 };

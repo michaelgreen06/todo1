@@ -22,7 +22,7 @@ import {
   storeSelection,
   updateFolderUrl,
 } from "./workspace-storage";
-import type { DialogState, EditDraft, Folder, Status, TodoItem, WorkspaceSelection, WorkspaceView } from "./workspace-types";
+import type { DialogState, EditDraft, Folder, Status, TodoItem, WorkspaceSelection, WorkspaceView, WorkspaceViewMode } from "./workspace-types";
 
 type FormStatus = {
   readonly error: string | null;
@@ -120,10 +120,7 @@ export function WorkspaceApp(): ReactElement {
         }
 
         setWorkspace(nextWorkspace);
-        setSelection({
-          folderId: nextWorkspace.folder?.id ?? null,
-          statusIds: nextWorkspace.selectedStatusIds,
-        });
+        setSelection(getSelectionFromWorkspace(nextWorkspace));
       })
       .catch((loadError: unknown) => {
         if (!isCurrent) {
@@ -137,10 +134,7 @@ export function WorkspaceApp(): ReactElement {
             }
 
             setWorkspace(nextWorkspace);
-            setSelection({
-              folderId: nextWorkspace.folder?.id ?? null,
-              statusIds: nextWorkspace.selectedStatusIds,
-            });
+            setSelection(getSelectionFromWorkspace(nextWorkspace));
           })
           .catch((fallbackError: unknown) => {
             if (isCurrent) {
@@ -152,11 +146,11 @@ export function WorkspaceApp(): ReactElement {
     return () => {
       isCurrent = false;
     };
-  }, [selection.folderId, selection.statusIds.join("|")]);
+  }, [selection.view, selection.folderId, selection.statusIds.join("|")]);
 
   useEffect(() => {
     storeSelection(selection);
-    updateFolderUrl(selection.folderId);
+    updateFolderUrl(selection);
     selectionRef.current = selection;
   }, [selection]);
 
@@ -234,10 +228,7 @@ export function WorkspaceApp(): ReactElement {
   async function refreshCurrentWorkspace(): Promise<void> {
     const nextWorkspace = await loadWorkspace(selection);
     setWorkspace(nextWorkspace);
-    setSelection({
-      folderId: nextWorkspace.folder?.id ?? null,
-      statusIds: nextWorkspace.selectedStatusIds,
-    });
+    setSelection(getSelectionFromWorkspace(nextWorkspace));
   }
 
   async function runPlaudSyncNow(): Promise<void> {
@@ -363,10 +354,7 @@ export function WorkspaceApp(): ReactElement {
       try {
         const nextWorkspace = await loadWorkspace(selectionRef.current);
         setWorkspace(nextWorkspace);
-        setSelection({
-          folderId: nextWorkspace.folder?.id ?? null,
-          statusIds: nextWorkspace.selectedStatusIds,
-        });
+        setSelection(getSelectionFromWorkspace(nextWorkspace));
       } catch (refreshError: unknown) {
         setError(errorMessage(refreshError, errorMessage(reorderError, "Could not restore item order.")));
       }
@@ -424,6 +412,21 @@ export function WorkspaceApp(): ReactElement {
     setEditingItemId(null);
     setFormStatus(emptyFormStatus);
     setSelection({ ...selection, folderId });
+  }
+
+  function changeView(view: WorkspaceViewMode): void {
+    if (workspace === null) {
+      return;
+    }
+
+    setSelectedItemIds([]);
+    setEditingItemId(null);
+    setFormStatus(emptyFormStatus);
+    setSelection({
+      view,
+      folderId: view === "inbox" ? null : (view === "actions" ? workspace.roots.actions.id : workspace.roots.reference.id),
+      statusIds: selection.statusIds,
+    });
   }
 
   function changeStatuses(statusId: string, isSelected: boolean): void {
@@ -492,7 +495,7 @@ export function WorkspaceApp(): ReactElement {
       await createTodo({
         title: getFormString(form, "title"),
         body: getFormString(form, "body"),
-        folderId: selection.folderId,
+        folderId: selection.view === "inbox" ? null : (workspace?.folder?.id ?? null),
       });
       setDialog(null);
       await refreshCurrentWorkspace();
@@ -614,7 +617,7 @@ export function WorkspaceApp(): ReactElement {
         folderPath: getFormString(form, "folderPath"),
       });
       setWorkspace(result.workspace);
-      setSelection({ folderId: result.folder.id, statusIds: result.workspace.selectedStatusIds });
+      setSelection(getSelectionFromWorkspace(result.workspace));
       setFormStatus(emptyFormStatus);
       event.currentTarget.reset();
     } catch (folderError: unknown) {
@@ -645,10 +648,7 @@ export function WorkspaceApp(): ReactElement {
     try {
       const nextWorkspace = await deleteFolder(folder.id, selection);
       setWorkspace(nextWorkspace);
-      setSelection({
-        folderId: nextWorkspace.folder?.id ?? null,
-        statusIds: nextWorkspace.selectedStatusIds,
-      });
+      setSelection(getSelectionFromWorkspace(nextWorkspace));
       setFormStatus(emptyFormStatus);
     } catch (deleteError: unknown) {
       setFormStatus({ error: errorMessage(deleteError, "Could not delete folder."), isSaving: false });
@@ -721,37 +721,62 @@ export function WorkspaceApp(): ReactElement {
         <aside className="panel sidebar" aria-labelledby="folder-navigation-heading">
           <h2 id="folder-navigation-heading">Folders</h2>
           <FolderNavigation
+            view={workspace.view}
+            roots={workspace.roots}
             folders={workspace.folders}
             selectedFolderId={workspace.folder?.id ?? null}
             inboxCount={workspace.inboxCount}
+            onViewSelect={changeView}
             onSelect={changeFolder}
           />
-          <form className="stack folder-create" onSubmit={(event) => { void saveFolderCreate(event); }}>
-            <label htmlFor="sidebar-folder-path">Add folder path</label>
-            <input id="sidebar-folder-path" name="folderPath" type="text" placeholder="Meetings / Regen Hub" required />
-            <button type="submit" disabled={formStatus.isSaving}>Add folder</button>
-          </form>
+          {workspace.view === "inbox" ? null : (
+            <form className="stack folder-create" onSubmit={(event) => { void saveFolderCreate(event); }}>
+              <label htmlFor="sidebar-folder-path">Add folder path</label>
+              <input id="sidebar-folder-path" name="folderPath" type="text" placeholder="Errands / Costco" required />
+              <button type="submit" disabled={formStatus.isSaving}>Add folder</button>
+            </form>
+          )}
         </aside>
         <main className="main-column">
           <section className="panel mobile-location">
-            <label htmlFor="mobile-folder-id">Location</label>
+            <label htmlFor="mobile-view">Workspace</label>
             <select
-              id="mobile-folder-id"
-              value={selection.folderId ?? ""}
-              onChange={(event) => {
-                changeFolder(event.currentTarget.value.length === 0 ? null : event.currentTarget.value);
-              }}
+              id="mobile-view"
+              value={selection.view}
+              onChange={(event) => { changeView(parseWorkspaceViewMode(event.currentTarget.value)); }}
             >
-              <option value="">Inbox</option>
-              <FolderOptions folders={workspace.folders} selectedId={selection.folderId} />
+              <option value="inbox">Inbox</option>
+              <option value="actions">Actions</option>
+              <option value="reference">Reference</option>
             </select>
+            {selection.view === "inbox" ? null : (
+              <>
+                <label htmlFor="mobile-folder-id">Folder</label>
+                <select
+                  id="mobile-folder-id"
+                  value={workspace.folder?.id ?? ""}
+                  onChange={(event) => {
+                    changeFolder(event.currentTarget.value.length === 0 ? null : event.currentTarget.value);
+                  }}
+                >
+                  <option value={selection.view === "actions" ? workspace.roots.actions.id : workspace.roots.reference.id}>
+                    {selection.view === "actions" ? workspace.roots.actions.name : workspace.roots.reference.name}
+                  </option>
+                  <FolderOptions
+                    folders={workspace.folders}
+                    selectedId={selection.folderId}
+                    parentId={selection.view === "actions" ? workspace.roots.actions.id : workspace.roots.reference.id}
+                  />
+                </select>
+              </>
+            )}
           </section>
           <Breadcrumbs ancestors={workspace.ancestors} onSelect={changeFolder} />
           <section className="panel list-panel" aria-labelledby="todo-list-heading">
             <div className="list-heading">
               <div>
-                <p className="eyebrow">{workspace.folder === null ? "Unfiled items" : "Direct folder items"}</p>
-                <h1 id="todo-list-heading">{workspace.folder?.name ?? "Inbox"}</h1>
+                <p className="eyebrow">{workspace.view === "inbox" ? "Unfiled items" : "Direct folder items"}</p>
+                <h1 id="todo-list-heading">{workspace.view === "inbox" ? "Inbox" : (workspace.folder?.name ?? "Workspace")}</h1>
               </div>
               <button type="button" className="secondary" onClick={openCreateDialog}>Add item</button>
             </div>
@@ -762,7 +787,7 @@ export function WorkspaceApp(): ReactElement {
               selectedStatusIds={selection.statusIds}
               onChange={changeStatuses}
             />
-            {workspace.folder === null ? null : (
+            {workspace.folder === null || workspace.folder.id === workspace.roots.actions.id || workspace.folder.id === workspace.roots.reference.id ? null : (
               <FolderSettings
                 folder={workspace.folder}
                 isSaving={formStatus.isSaving}
@@ -861,33 +886,51 @@ export function WorkspaceApp(): ReactElement {
 }
 
 function FolderNavigation(props: {
+  readonly view: WorkspaceViewMode;
+  readonly roots: WorkspaceView["roots"];
   readonly folders: ReadonlyArray<Folder>;
   readonly selectedFolderId: string | null;
   readonly inboxCount: number;
+  readonly onViewSelect: (view: WorkspaceViewMode) => void;
   readonly onSelect: (folderId: string | null) => void;
 }): ReactElement {
-  const roots = props.folders.filter((folder) => folder.parentId === null);
+  const root = props.view === "actions"
+    ? props.roots.actions
+    : (props.view === "reference" ? props.roots.reference : null);
 
   return (
     <nav aria-label="Folder navigation">
       <button
         type="button"
-        className={`folder-link ${props.selectedFolderId === null ? "selected" : ""}`}
-        onClick={() => { props.onSelect(null); }}
+        className={`folder-link ${props.view === "inbox" ? "selected" : ""}`}
+        onClick={() => { props.onViewSelect("inbox"); }}
       >
         <span>Inbox</span><span>{props.inboxCount.toString()}</span>
       </button>
-      <ul className="folder-tree">
-        {roots.map((folder) => (
+      <button
+        type="button"
+        className={`folder-link ${props.view === "actions" ? "selected" : ""}`}
+        onClick={() => { props.onViewSelect("actions"); }}
+      >
+        <span>{props.roots.actions.name}</span><span />
+      </button>
+      <button
+        type="button"
+        className={`folder-link ${props.view === "reference" ? "selected" : ""}`}
+        onClick={() => { props.onViewSelect("reference"); }}
+      >
+        <span>{props.roots.reference.name}</span><span />
+      </button>
+      {root === null ? null : (
+        <ul className="folder-tree">
           <FolderBranch
-            key={folder.id}
-            folder={folder}
+            folder={root}
             folders={props.folders}
             selectedFolderId={props.selectedFolderId}
             onSelect={props.onSelect}
           />
-        ))}
-      </ul>
+        </ul>
+      )}
     </nav>
   );
 }
@@ -915,7 +958,7 @@ function FolderBranch(props: {
 
   return (
     <li>
-      <details open={children.some((child) => child.id === props.selectedFolderId)}>
+      <details open={props.folder.id === props.selectedFolderId || children.some((child) => child.id === props.selectedFolderId)}>
         <summary>{link}</summary>
         <ul>
           {children.map((child) => (
@@ -968,7 +1011,6 @@ function Breadcrumbs(props: {
   return (
     <nav className="breadcrumbs" aria-label="Breadcrumb">
       <ol>
-        <li><button type="button" onClick={() => { props.onSelect(null); }}>Inbox</button></li>
         {props.ancestors.map((folder) => (
           <li key={folder.id}><button type="button" onClick={() => { props.onSelect(folder.id); }}>{folder.name}</button></li>
         ))}
@@ -1256,6 +1298,22 @@ function getFormString(form: FormData, key: string): string {
 function nullableFormId(form: FormData, key: string): string | null {
   const value = getFormString(form, key).trim();
   return value.length === 0 ? null : value;
+}
+
+function parseWorkspaceViewMode(value: string): WorkspaceViewMode {
+  return value === "actions" || value === "reference" ? value : "inbox";
+}
+
+function getSelectionFromWorkspace(workspace: WorkspaceView): WorkspaceSelection {
+  const rootId = workspace.view === "actions"
+    ? workspace.roots.actions.id
+    : (workspace.view === "reference" ? workspace.roots.reference.id : null);
+
+  return {
+    view: workspace.view,
+    folderId: workspace.folder?.id === rootId ? null : (workspace.folder?.id ?? null),
+    statusIds: workspace.selectedStatusIds,
+  };
 }
 
 function errorMessage(error: unknown, fallback: string): string {

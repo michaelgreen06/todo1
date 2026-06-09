@@ -134,7 +134,25 @@ type SqliteExecOptions = {
 };
 
 const SQLITE_BIN = "/usr/bin/sqlite3";
-const ITEM_KIND = "todo";
+export const WORKSPACE_VIEWS = {
+  inbox: "inbox",
+  actions: "actions",
+  reference: "reference",
+} as const;
+
+export type WorkspaceViewMode = (typeof WORKSPACE_VIEWS)[keyof typeof WORKSPACE_VIEWS];
+
+const ITEM_KIND_ACTION = "todo";
+const ITEM_KIND_REFERENCE = "reference";
+const RESERVED_ROOT_NAMES = {
+  actions: "Actions",
+  reference: "Reference",
+} as const;
+
+export type WorkspaceRoots = {
+  readonly actions: Folder;
+  readonly reference: Folder;
+};
 
 const SEEDED_STATUSES = [
   { name: "Active", category: STATUS_CATEGORIES.active, showInTodoView: true, isDefaultForNewItems: true },
@@ -315,6 +333,8 @@ export function findOrCreateUserByEmail(email: string): User {
     COMMIT;
   `);
 
+  ensureWorkspaceRoots(user.id);
+
   return user;
 }
 
@@ -460,7 +480,7 @@ export function routeCaptureForMvp(deviceToken: DeviceToken, input: CaptureInput
       todo_rank, todo_rank_changed_at, created_at, updated_at
     )
     SELECT
-      ${sql(itemId)}, ${sql(capture.userId)}, ${sql(routeNodeId)}, ${sql(defaultStatus.id)}, ${sql(ITEM_KIND)}, ${sql(route.title)},
+      ${sql(itemId)}, ${sql(capture.userId)}, ${sql(routeNodeId)}, ${sql(defaultStatus.id)}, ${sql(getItemKindForLocation(capture.userId, routeNodeId))}, ${sql(route.title)},
       ${sql(route.body)}, ${sql(capture.id)}, ${sql(capture.createdAt)}, ${sql(todoRank)}, NULL,
       ${sql(capture.createdAt)}, ${sql(capture.createdAt)}
     FROM captures
@@ -540,6 +560,53 @@ export function listTodoItems(userId: string, nodeId: string | null, statusIds: 
       AND items.todo_rank IS NOT NULL
     ORDER BY items.todo_rank ASC, items.created_at ASC;
   `).map(mapItem);
+}
+
+export function ensureWorkspaceRoots(userId: string): WorkspaceRoots {
+  const actions = ensureReservedRoot(userId, RESERVED_ROOT_NAMES.actions);
+  const reference = ensureReservedRoot(userId, RESERVED_ROOT_NAMES.reference);
+  return { actions, reference };
+}
+
+export function getWorkspaceRoots(userId: string): WorkspaceRoots {
+  return ensureWorkspaceRoots(userId);
+}
+
+export function getWorkspaceViewForFolder(folderId: string, userId: string): WorkspaceViewMode | null {
+  const roots = getWorkspaceRoots(userId);
+
+  if (folderId === roots.actions.id || isFolderInSubtree(userId, roots.actions.id, folderId)) {
+    return WORKSPACE_VIEWS.actions;
+  }
+
+  if (folderId === roots.reference.id || isFolderInSubtree(userId, roots.reference.id, folderId)) {
+    return WORKSPACE_VIEWS.reference;
+  }
+
+  return null;
+}
+
+export function isReservedWorkspaceRoot(folderId: string, userId: string): boolean {
+  const roots = getWorkspaceRoots(userId);
+  return folderId === roots.actions.id || folderId === roots.reference.id;
+}
+
+export function isFolderInSubtree(userId: string, rootFolderId: string, folderId: string): boolean {
+  const row = firstRow(queryRows(`
+    WITH RECURSIVE descendants(id) AS (
+      SELECT id
+      FROM nodes
+      WHERE id = ${sql(rootFolderId)} AND user_id = ${sql(userId)} AND kind = ${sql("folder")}
+      UNION ALL
+      SELECT nodes.id
+      FROM nodes
+      JOIN descendants ON descendants.id = nodes.parent_id
+      WHERE nodes.user_id = ${sql(userId)} AND nodes.kind = ${sql("folder")}
+    )
+    SELECT EXISTS(SELECT 1 FROM descendants WHERE id = ${sql(folderId)}) AS is_match;
+  `));
+
+  return row !== null && getRequiredBoolean(row, "is_match");
 }
 
 export function listFolders(userId: string, statusIds: ReadonlyArray<string>): Array<Folder> {
@@ -712,13 +779,14 @@ export function createTodoItem(userId: string, title: string | null, body: strin
   const timestamp = nowIso();
   const itemId = globalThis.crypto.randomUUID();
   const todoRank = generateTopTodoRank(userId, nodeId);
+  const itemKind = getItemKindForLocation(userId, nodeId);
   executeSql(`
     BEGIN IMMEDIATE;
     INSERT INTO items (
       id, user_id, node_id, status_id, kind, title, body, source_capture_id, status_changed_at,
       todo_rank, todo_rank_changed_at, created_at, updated_at
     ) VALUES (
-      ${sql(itemId)}, ${sql(userId)}, ${sql(nodeId)}, ${sql(defaultStatus.id)}, ${sql(ITEM_KIND)}, ${sql(title)}, ${sql(body)},
+      ${sql(itemId)}, ${sql(userId)}, ${sql(nodeId)}, ${sql(defaultStatus.id)}, ${sql(itemKind)}, ${sql(title)}, ${sql(body)},
       NULL, ${sql(timestamp)}, ${sql(todoRank)}, NULL, ${sql(timestamp)}, ${sql(timestamp)}
     );
     INSERT INTO item_status_changes (id, item_id, from_status_id, to_status_id, note, changed_at)
@@ -775,9 +843,10 @@ export function moveTodoItemToLocation(itemId: string, userId: string, nodeId: s
   }
 
   const timestamp = nowIso();
+  const itemKind = getItemKindForLocation(userId, nodeId, item.kind);
   executeSql(`
     UPDATE items
-    SET node_id = ${sql(nodeId)}, todo_rank = ${sql(generateTopTodoRank(userId, nodeId))},
+    SET node_id = ${sql(nodeId)}, kind = ${sql(itemKind)}, todo_rank = ${sql(generateTopTodoRank(userId, nodeId))},
       todo_rank_changed_at = ${sql(timestamp)}, updated_at = ${sql(timestamp)}
     WHERE id = ${sql(item.id)} AND user_id = ${sql(userId)};
   `);
@@ -853,6 +922,43 @@ function findUserByEmail(email: string): User | null {
   `));
 
   return row === null ? null : mapUser(row);
+}
+
+function ensureReservedRoot(userId: string, name: string): Folder {
+  const existing = findSiblingFolder(userId, null, name);
+
+  if (existing !== null) {
+    return existing;
+  }
+
+  const timestamp = nowIso();
+  const folderId = globalThis.crypto.randomUUID();
+  executeSql(`
+    INSERT INTO nodes (id, user_id, parent_id, name, kind, created_at, updated_at)
+    VALUES (${sql(folderId)}, ${sql(userId)}, NULL, ${sql(name)}, ${sql("folder")}, ${sql(timestamp)}, ${sql(timestamp)});
+  `);
+
+  const folder = findFolderForUser(folderId, userId);
+
+  if (folder === null) {
+    throw new Error("Reserved workspace root could not be found.");
+  }
+
+  return folder;
+}
+
+function getItemKindForLocation(userId: string, nodeId: string | null, fallbackKind: string = ITEM_KIND_ACTION): string {
+  if (nodeId === null) {
+    return fallbackKind;
+  }
+
+  const view = getWorkspaceViewForFolder(nodeId, userId);
+
+  if (view === WORKSPACE_VIEWS.reference) {
+    return ITEM_KIND_REFERENCE;
+  }
+
+  return ITEM_KIND_ACTION;
 }
 
 function findDefaultStatus(userId: string): Status | null {

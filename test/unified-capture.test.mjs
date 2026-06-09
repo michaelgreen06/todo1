@@ -662,7 +662,7 @@ test("unified capture server MVP", async (suite) => {
         body: "peanut butter",
         source_capture_id: initialBody.capture_id,
       }]);
-      assert.equal(queryRows(databasePath, `SELECT COUNT(*) AS count FROM nodes WHERE user_id = '${user.id}';`)[0]?.count, 2);
+      assert.equal(queryRows(databasePath, `SELECT COUNT(*) AS count FROM nodes WHERE user_id = '${user.id}';`)[0]?.count, 4);
 
       const replayResponse = await postCapture(`Bearer ${rawToken}`, {
         ...validCapture,
@@ -677,7 +677,7 @@ test("unified capture server MVP", async (suite) => {
       });
       assert.equal(queryRows(databasePath, "SELECT COUNT(*) AS count FROM captures;")[0]?.count, 1);
       assert.equal(queryRows(databasePath, "SELECT COUNT(*) AS count FROM items;")[0]?.count, 1);
-      assert.equal(queryRows(databasePath, `SELECT COUNT(*) AS count FROM nodes WHERE user_id = '${user.id}';`)[0]?.count, 2);
+      assert.equal(queryRows(databasePath, `SELECT COUNT(*) AS count FROM nodes WHERE user_id = '${user.id}';`)[0]?.count, 4);
     });
   });
 
@@ -708,10 +708,11 @@ test("unified capture server MVP", async (suite) => {
         body: "search facebook marketplace for swingtop bottles",
         source_capture_id: body.capture_id,
       }]);
-      assert.deepEqual(queryRows(databasePath, `SELECT name, parent_id FROM nodes WHERE user_id = '${user.id}';`), [{
-        name: "agent",
-        parent_id: null,
-      }]);
+      assert.deepEqual(queryRows(databasePath, `SELECT name, parent_id FROM nodes WHERE user_id = '${user.id}' ORDER BY name COLLATE NOCASE ASC;`), [
+        { name: "Actions", parent_id: null },
+        { name: "agent", parent_id: null },
+        { name: "Reference", parent_id: null },
+      ]);
     });
   });
 

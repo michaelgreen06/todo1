@@ -1,17 +1,22 @@
-import type { WorkspaceSelection } from "./workspace-types";
+import type { WorkspaceSelection, WorkspaceViewMode } from "./workspace-types";
 
+const VIEW_KEY = "todo.workspace.view";
 const FOLDER_KEY = "todo.workspace.folderId";
 const STATUS_KEY = "todo.workspace.statusIds";
 const SCROLL_KEY = "todo.workspace.scrollY";
 
 export function readStoredSelection(): WorkspaceSelection {
+  const routeSelection = getUrlSelection();
+
   return {
-    folderId: getUrlFolderId() ?? getStoredNullableString(FOLDER_KEY),
+    view: routeSelection?.view ?? getStoredView(),
+    folderId: routeSelection?.folderId ?? getStoredNullableString(FOLDER_KEY),
     statusIds: getStoredStringArray(STATUS_KEY),
   };
 }
 
 export function storeSelection(selection: WorkspaceSelection): void {
+  window.sessionStorage.setItem(VIEW_KEY, selection.view);
   window.sessionStorage.setItem(FOLDER_KEY, selection.folderId ?? "");
   window.sessionStorage.setItem(STATUS_KEY, JSON.stringify(selection.statusIds));
 }
@@ -31,32 +36,93 @@ export function storeScrollY(scrollY: number): void {
   window.sessionStorage.setItem(SCROLL_KEY, Math.max(0, Math.round(scrollY)).toString());
 }
 
-export function updateFolderUrl(folderId: string | null): void {
-  const nextPath = folderId === null ? "/" : `/folders/${encodeURIComponent(folderId)}`;
+export function updateFolderUrl(selection: WorkspaceSelection): void {
+  const nextPath = getSelectionPath(selection);
 
   if (window.location.pathname !== nextPath) {
     window.history.pushState(null, "", nextPath);
   }
 }
 
-function getUrlFolderId(): string | null {
-  const match = /^\/folders\/([^/]+)$/u.exec(window.location.pathname);
-
-  if (match === null) {
+function getUrlSelection(): WorkspaceSelection | null {
+  if (window.location.pathname === "/") {
     return null;
   }
 
-  const [, encodedFolderId] = match;
+  const rootMatch = /^\/(actions|reference)$/u.exec(window.location.pathname);
+
+  if (rootMatch !== null) {
+    const [, view] = rootMatch;
+    return view === undefined ? null : { view: parseWorkspaceViewMode(view), folderId: null, statusIds: [] };
+  }
+
+  const folderMatch = /^\/(actions|reference)\/folders\/([^/]+)$/u.exec(window.location.pathname);
+
+  if (folderMatch !== null) {
+    const [, rawView, encodedFolderId] = folderMatch;
+
+    if (rawView === undefined || encodedFolderId === undefined) {
+      return null;
+    }
+
+    try {
+      return {
+        view: parseWorkspaceViewMode(rawView),
+        folderId: decodeURIComponent(encodedFolderId),
+        statusIds: [],
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  const legacyMatch = /^\/folders\/([^/]+)$/u.exec(window.location.pathname);
+
+  if (legacyMatch === null) {
+    return null;
+  }
+
+  const [, encodedFolderId] = legacyMatch;
 
   if (encodedFolderId === undefined) {
     return null;
   }
 
   try {
-    return decodeURIComponent(encodedFolderId);
+    return {
+      view: "actions",
+      folderId: decodeURIComponent(encodedFolderId),
+      statusIds: [],
+    };
   } catch {
     return null;
   }
+}
+
+function getStoredView(): WorkspaceViewMode {
+  const value = window.sessionStorage.getItem(VIEW_KEY);
+
+  if (value === "actions" || value === "reference") {
+    return value;
+  }
+
+  return getStoredNullableString(FOLDER_KEY) === null ? "inbox" : "actions";
+}
+
+function getSelectionPath(selection: WorkspaceSelection): string {
+  if (selection.view === "inbox") {
+    return "/";
+  }
+
+  if (selection.folderId === null) {
+    return `/${selection.view}`;
+  }
+
+  return `/${selection.view}/folders/${encodeURIComponent(selection.folderId)}`;
+}
+
+function parseWorkspaceViewMode(value: string): WorkspaceViewMode {
+  return value === "actions" || value === "reference" ? value : "inbox";
 }
 
 function getStoredNullableString(key: string): string | null {

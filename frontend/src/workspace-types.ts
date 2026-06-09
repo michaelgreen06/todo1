@@ -40,10 +40,19 @@ export type Folder = {
   readonly updatedAt: string;
 };
 
+export type WorkspaceViewMode = "inbox" | "actions" | "reference";
+
+export type WorkspaceRoots = {
+  readonly actions: Folder;
+  readonly reference: Folder;
+};
+
 export type WorkspaceView = {
+  readonly view: WorkspaceViewMode;
   readonly user: {
     readonly email: string;
   };
+  readonly roots: WorkspaceRoots;
   readonly folder: Folder | null;
   readonly folders: ReadonlyArray<Folder>;
   readonly ancestors: ReadonlyArray<Folder>;
@@ -54,6 +63,7 @@ export type WorkspaceView = {
 };
 
 export type WorkspaceSelection = {
+  readonly view: WorkspaceViewMode;
   readonly folderId: string | null;
   readonly statusIds: ReadonlyArray<string>;
 };

@@ -29,10 +29,32 @@ const completedStatus: Status = {
 const projectFolder: Folder = {
   id: "folder-1",
   userId: "user-1",
-  parentId: null,
+  parentId: "actions-root",
   name: "Project",
   kind: "folder",
   directItemCount: 1,
+  createdAt: "2026-06-04T00:00:00.000Z",
+  updatedAt: "2026-06-04T00:00:00.000Z",
+};
+
+const actionsRoot: Folder = {
+  id: "actions-root",
+  userId: "user-1",
+  parentId: null,
+  name: "Actions",
+  kind: "folder",
+  directItemCount: 0,
+  createdAt: "2026-06-04T00:00:00.000Z",
+  updatedAt: "2026-06-04T00:00:00.000Z",
+};
+
+const referenceRoot: Folder = {
+  id: "reference-root",
+  userId: "user-1",
+  parentId: null,
+  name: "Reference",
+  kind: "folder",
+  directItemCount: 0,
   createdAt: "2026-06-04T00:00:00.000Z",
   updatedAt: "2026-06-04T00:00:00.000Z",
 };
@@ -96,7 +118,7 @@ describe("WorkspaceApp", () => {
     expect(screen.getByRole("link", { name: "Prompts" })).toHaveAttribute("href", "/prompts");
     expect(requests[0]).toEqual({
       path: "/api/workspace/view",
-      body: JSON.stringify({ folderId: "folder-1", statusIds: ["active", "completed"] }),
+      body: JSON.stringify({ view: "actions", folderId: "folder-1", statusIds: ["active", "completed"] }),
     });
     await waitFor(() => {
       expect(window.scrollTo).toHaveBeenCalledWith({ top: 120 });
@@ -117,7 +139,7 @@ describe("WorkspaceApp", () => {
     expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
     expect(requests[0]).toEqual({
       path: "/api/workspace/view",
-      body: JSON.stringify({ folderId: "folder-1", statusIds: [] }),
+      body: JSON.stringify({ view: "actions", folderId: "folder-1", statusIds: [] }),
     });
   });
 
@@ -134,7 +156,7 @@ describe("WorkspaceApp", () => {
     render(<WorkspaceApp />);
 
     expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("Location"), "");
+    await user.selectOptions(screen.getByLabelText("Workspace"), "inbox");
     await waitFor(() => {
       expect(window.location.pathname).toBe("/");
     });
@@ -159,6 +181,24 @@ describe("WorkspaceApp", () => {
     await user.click(screen.getByRole("button", { name: "Close" }));
     await user.click(screen.getByLabelText("Completed"));
     expect(window.sessionStorage.getItem("todo.workspace.statusIds")).toContain("completed");
+  });
+
+  it("defaults to inbox navigation and hides the folder tree there", async () => {
+    globalThis.fetch = async (): Promise<Response> => jsonResponse({
+      workspace: makeWorkspace({
+        view: "inbox",
+        folder: null,
+        todos: [{ ...inboxItem, nodeId: null }],
+      }),
+    });
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Inbox" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Actions" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reference" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Project" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Add folder path")).not.toBeInTheDocument();
   });
 
   it("clears stale folder form state before opening create item dialog", async () => {
@@ -343,6 +383,7 @@ describe("WorkspaceApp", () => {
       expect(requests).toContainEqual({
         path: "/api/todos/reorder",
         body: JSON.stringify({
+          view: "actions",
           folderId: "folder-1",
           statusIds: ["active"],
           movedId: "todo-1",
@@ -392,17 +433,28 @@ describe("WorkspaceApp", () => {
 });
 
 function makeWorkspace(overrides: {
+  readonly view?: WorkspaceView["view"];
   readonly folder?: Folder | null;
   readonly todos?: ReadonlyArray<TodoItem>;
   readonly selectedStatusIds?: ReadonlyArray<string>;
 } = {}): WorkspaceView {
   const folder = overrides.folder === undefined ? projectFolder : overrides.folder;
+  const view = overrides.view ?? (folder === null ? "inbox" : "actions");
 
   return {
+    view,
     user: { email: "test@example.com" },
+    roots: {
+      actions: actionsRoot,
+      reference: referenceRoot,
+    },
     folder,
-    folders: [projectFolder],
-    ancestors: folder === null ? [] : [projectFolder],
+    folders: [actionsRoot, referenceRoot, projectFolder],
+    ancestors: folder === null
+      ? []
+      : (folder.id === actionsRoot.id || folder.id === referenceRoot.id
+        ? [folder]
+        : [actionsRoot, projectFolder]),
     inboxCount: 0,
     todos: overrides.todos ?? [inboxItem],
     statuses: [activeStatus, completedStatus],

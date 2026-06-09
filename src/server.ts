@@ -16,10 +16,14 @@ import {
   createFolderPath,
   createTodoItem,
   deleteEmptyLeafFolder,
+  getWorkspaceRoots,
+  getWorkspaceViewForFolder,
   findActiveDeviceToken,
   findFolderForUser,
   findItemForUser,
   initializeDatabase,
+  isFolderInSubtree,
+  isReservedWorkspaceRoot,
   listFolderAncestors,
   listFolders,
   listItemStatusChanges,
@@ -31,6 +35,7 @@ import {
   reorderVisibleTodoItem,
   routeCaptureForMvp,
   updateTodoItem,
+  WORKSPACE_VIEWS,
 } from "./db.js";
 import {
   renderEditPage,
@@ -61,7 +66,7 @@ import {
   validateStatusChangeInput,
   validateTodoInput,
 } from "./validation.js";
-import type { Folder, Status, User } from "./db.js";
+import type { Folder, Status, User, WorkspaceRoots, WorkspaceViewMode } from "./db.js";
 import type { WorkspaceView, WorkspaceViewRequest } from "./api-types.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { TelegramHermesConfig } from "./telegram-hermes.js";
@@ -92,6 +97,7 @@ type PageContext = {
 type JsonRecord = Readonly<Record<string, unknown>>;
 
 type ApiViewPayload = {
+  readonly view: WorkspaceViewMode;
   readonly folderId: string | null;
   readonly statusIds: ReadonlyArray<string> | null;
 };
@@ -128,6 +134,7 @@ type ReorderPayload = {
   readonly movedId: string | null;
   readonly previousId: string | null;
   readonly nextId: string | null;
+  readonly view: WorkspaceViewMode;
   readonly folderId: string | null;
   readonly statusIds: ReadonlyArray<string> | null;
 };
@@ -217,13 +224,15 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
     return;
   }
 
-  if (method === "GET" && url.pathname === "/") {
+  const viewRoute = parseWorkspaceViewRoute(url.pathname, user.id);
+
+  if (method === "GET" && viewRoute !== null) {
     if (await serveWorkspaceShell(response)) {
       return;
     }
 
     // TODO: Remove this SSR workspace fallback after the React workspace is stable.
-    sendTodoPage(response, user, url, null, null);
+    sendTodoPage(response, user, url, viewRoute.folder, null);
     return;
   }
 
@@ -404,7 +413,7 @@ async function handleApiRequest(
   const method = request.method ?? "GET";
 
   if (method === "GET" && url.pathname === "/api/workspace/default") {
-    sendWorkspaceViewResponse(response, user, { folderId: null, statusIds: null });
+    sendWorkspaceViewResponse(response, user, { view: WORKSPACE_VIEWS.inbox, folderId: null, statusIds: null });
     return;
   }
 
@@ -614,17 +623,21 @@ async function handleApiChangeLocation(
     return;
   }
 
-  const locationResult = getApiLocationResult(await readApiJsonBody(request));
+  const rawPayload = await readApiJsonBody(request);
+  const locationResult = getApiLocationResult(rawPayload);
+  const view = parseApiViewPayload(rawPayload).view;
 
   if (!locationResult.ok) {
     sendApiValidationError(response, locationResult.message);
     return;
   }
 
-  const folder = locationResult.value.folderPathSegments === null
-    ? null
-    : createFolderPath(user.id, locationResult.value.folderPathSegments);
-  const folderId = folder?.id ?? locationResult.value.folderId;
+  const folderId = resolveLocationFolderId(user.id, view, locationResult.value);
+
+  if (folderId === false) {
+    sendApiValidationError(response, "Folder paths from Inbox must start with Actions or Reference.");
+    return;
+  }
 
   if (folderId !== null && findFolderForUser(folderId, user.id) === null) {
     sendJsonValue(response, 404, { error: "Folder not found" });
@@ -653,6 +666,7 @@ async function handleApiBulkChangeLocation(request: IncomingMessage, response: S
   }
 
   const locationResult = validateLocationInput(payload.folderId, payload.folderPath);
+  const view = parseApiViewPayload(rawPayload).view;
 
   if (!locationResult.ok) {
     sendApiValidationError(response, locationResult.message);
@@ -666,10 +680,12 @@ async function handleApiBulkChangeLocation(request: IncomingMessage, response: S
     }
   }
 
-  const folder = locationResult.value.folderPathSegments === null
-    ? null
-    : createFolderPath(user.id, locationResult.value.folderPathSegments);
-  const folderId = folder?.id ?? locationResult.value.folderId;
+  const folderId = resolveLocationFolderId(user.id, view, locationResult.value);
+
+  if (folderId === false) {
+    sendApiValidationError(response, "Folder paths from Inbox must start with Actions or Reference.");
+    return;
+  }
 
   if (folderId !== null && findFolderForUser(folderId, user.id) === null) {
     sendJsonValue(response, 404, { error: "Folder not found" });
@@ -713,14 +729,22 @@ async function handleApiCreateFolder(request: IncomingMessage, response: ServerR
   const rawPayload = await readApiJsonBody(request);
   const payload = parseFolderPathPayload(rawPayload);
   const pathResult = validateFolderPath(payload.folderPath);
+  const viewRequest = parseApiViewPayload(rawPayload);
 
   if (!pathResult.ok) {
     sendApiValidationError(response, pathResult.message);
     return;
   }
 
-  const folder = createFolderPath(user.id, pathResult.value);
-  sendJsonValue(response, 201, { folder, workspace: getWorkspaceView(user, { folderId: folder.id, statusIds: parseApiViewPayload(rawPayload).statusIds }) });
+  const folderPath = resolveFolderPathForView(user.id, viewRequest.view, pathResult.value);
+
+  if (folderPath === null) {
+    sendApiValidationError(response, "Choose Actions or Reference before creating folders.");
+    return;
+  }
+
+  const folder = createFolderPath(user.id, folderPath);
+  sendJsonValue(response, 201, { folder, workspace: getWorkspaceView(user, { view: viewRequest.view, folderId: folder.id, statusIds: viewRequest.statusIds }) });
 }
 
 async function handleApiRenameFolder(
@@ -735,6 +759,11 @@ async function handleApiRenameFolder(
 
   if (!nameResult.ok) {
     sendApiValidationError(response, nameResult.message);
+    return;
+  }
+
+  if (isReservedWorkspaceRoot(folderId, user.id)) {
+    sendApiValidationError(response, "Reserved root folders cannot be renamed.");
     return;
   }
 
@@ -767,6 +796,11 @@ async function handleApiDeleteFolder(
     return;
   }
 
+  if (isReservedWorkspaceRoot(folderId, user.id)) {
+    sendApiValidationError(response, "Reserved root folders cannot be deleted.");
+    return;
+  }
+
   const result = deleteEmptyLeafFolder(folder.id, user.id);
 
   if (result === "not-empty") {
@@ -781,7 +815,7 @@ async function handleApiDeleteFolder(
 
   const view = parseApiViewPayload(rawPayload);
   const nextFolderId = view.folderId === folder.id ? folder.parentId : view.folderId;
-  sendWorkspaceViewResponse(response, user, { folderId: nextFolderId, statusIds: view.statusIds });
+  sendWorkspaceViewResponse(response, user, { view: view.view, folderId: nextFolderId, statusIds: view.statusIds });
 }
 
 async function handleLogin(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -828,13 +862,21 @@ async function handleCreateFolder(request: IncomingMessage, response: ServerResp
   const form = new URLSearchParams(await readRequestBody(request));
   const returnTo = getReturnTo(form, "/");
   const pathResult = validateFolderPath(form.get("folderPath"));
+  const view = getWorkspaceViewFromUrl(makeLocalUrl(returnTo), user.id);
 
   if (!pathResult.ok) {
     sendTodoPageForReturnTo(response, user, returnTo, pathResult.message);
     return;
   }
 
-  const folder = createFolderPath(user.id, pathResult.value);
+  const folderPath = resolveFolderPathForView(user.id, view, pathResult.value);
+
+  if (folderPath === null) {
+    sendTodoPageForReturnTo(response, user, returnTo, "Choose Actions or Reference before creating folders.");
+    return;
+  }
+
+  const folder = createFolderPath(user.id, folderPath);
   redirect(response, locationUrl(folder, getSelectedStatusIds(makeLocalUrl(returnTo), listStatuses(user.id))));
 }
 
@@ -845,6 +887,11 @@ async function handleRenameFolder(request: IncomingMessage, response: ServerResp
 
   if (!nameResult.ok) {
     sendTodoPageForReturnTo(response, user, returnTo, nameResult.message);
+    return;
+  }
+
+  if (isReservedWorkspaceRoot(folderId, user.id)) {
+    sendTodoPageForReturnTo(response, user, returnTo, "Reserved root folders cannot be renamed.");
     return;
   }
 
@@ -873,6 +920,12 @@ async function handleDeleteFolder(request: IncomingMessage, response: ServerResp
 
   const form = new URLSearchParams(await readRequestBody(request));
   const returnTo = getReturnTo(form, `/folders/${encodeURIComponent(folderId)}`);
+
+  if (isReservedWorkspaceRoot(folderId, user.id)) {
+    sendTodoPageForReturnTo(response, user, returnTo, "Reserved root folders cannot be deleted.");
+    return;
+  }
+
   const result = deleteEmptyLeafFolder(folder.id, user.id);
 
   if (result === "not-empty") {
@@ -1036,16 +1089,19 @@ async function handleChangeLocation(request: IncomingMessage, response: ServerRe
   const form = new URLSearchParams(await readRequestBody(request));
   const returnTo = getReturnTo(form, "/");
   const locationResult = validateLocationInput(form.get("folderId"), form.get("folderPath"));
+  const view = getWorkspaceViewFromUrl(makeLocalUrl(returnTo), user.id);
 
   if (!locationResult.ok) {
     sendTodoPageForReturnTo(response, user, returnTo, locationResult.message);
     return;
   }
 
-  const folder = locationResult.value.folderPathSegments === null
-    ? null
-    : createFolderPath(user.id, locationResult.value.folderPathSegments);
-  const folderId = folder?.id ?? locationResult.value.folderId;
+  const folderId = resolveLocationFolderId(user.id, view, locationResult.value);
+
+  if (folderId === false) {
+    sendTodoPageForReturnTo(response, user, returnTo, "Folder paths from Inbox must start with Actions or Reference.");
+    return;
+  }
 
   if (folderId !== null && findFolderForUser(folderId, user.id) === null) {
     sendHtml(response, 404, renderNotFoundPage());
@@ -1064,6 +1120,7 @@ async function handleBulkChangeLocation(request: IncomingMessage, response: Serv
   const form = new URLSearchParams(await readRequestBody(request));
   const returnTo = getReturnTo(form, "/");
   const todoIds = getSelectedTodoIds(form);
+  const view = getWorkspaceViewFromUrl(makeLocalUrl(returnTo), user.id);
 
   if (todoIds.length === 0) {
     sendTodoPageForReturnTo(response, user, returnTo, "Select at least one item to move.");
@@ -1084,10 +1141,12 @@ async function handleBulkChangeLocation(request: IncomingMessage, response: Serv
     }
   }
 
-  const folder = locationResult.value.folderPathSegments === null
-    ? null
-    : createFolderPath(user.id, locationResult.value.folderPathSegments);
-  const folderId = folder?.id ?? locationResult.value.folderId;
+  const folderId = resolveLocationFolderId(user.id, view, locationResult.value);
+
+  if (folderId === false) {
+    sendTodoPageForReturnTo(response, user, returnTo, "Folder paths from Inbox must start with Actions or Reference.");
+    return;
+  }
 
   if (folderId !== null && findFolderForUser(folderId, user.id) === null) {
     sendHtml(response, 404, renderNotFoundPage());
@@ -1133,8 +1192,9 @@ async function handleReorderTodos(request: IncomingMessage, url: URL, response: 
 
 function sendTodoPageForReturnTo(response: ServerResponse, user: User, returnTo: string, error: string): void {
   const url = makeLocalUrl(returnTo);
-  const folderId = parseFolderRoute(url.pathname)?.id ?? null;
-  const folder = folderId === null ? null : findFolderForUser(folderId, user.id);
+  const viewRoute = parseWorkspaceViewRoute(url.pathname, user.id);
+  const folder = viewRoute?.folder ?? null;
+  const folderId = folder?.id ?? null;
 
   if (folderId !== null && folder === null) {
     sendHtml(response, 404, renderNotFoundPage());
@@ -1178,19 +1238,18 @@ function sendWorkspaceViewResponse(response: ServerResponse, user: User, request
 function getWorkspaceView(user: User, request: WorkspaceViewRequest): WorkspaceView {
   const statuses = listStatuses(user.id);
   const selectedStatusIds = getSelectedStatusIdsFromIds(request.statusIds ?? [], statuses);
-  const folder = request.folderId === null ? null : findFolderForUser(request.folderId, user.id);
-
-  if (request.folderId !== null && folder === null) {
-    throw new NotFoundApiError("Folder not found");
-  }
+  const roots = getWorkspaceRoots(user.id);
+  const normalized = normalizeWorkspaceSelection(user.id, request.view, request.folderId, roots);
 
   return {
+    view: normalized.view,
     user: { email: user.email },
-    folder,
+    roots,
+    folder: normalized.folder,
     folders: listFolders(user.id, selectedStatusIds),
-    ancestors: folder === null ? [] : listFolderAncestors(folder.id, user.id),
+    ancestors: normalized.folder === null ? [] : listFolderAncestors(normalized.folder.id, user.id),
     inboxCount: countInboxItems(user.id, selectedStatusIds),
-    todos: listTodoItems(user.id, folder?.id ?? null, selectedStatusIds),
+    todos: listTodoItems(user.id, normalized.folder?.id ?? null, selectedStatusIds),
     statuses,
     selectedStatusIds,
   };
@@ -1219,7 +1278,8 @@ function getSelectedStatusIdsFromIds(statusIds: ReadonlyArray<string>, statuses:
 }
 
 function locationUrl(folder: Folder | null, statusIds: ReadonlyArray<string>): string {
-  const pathname = folder === null ? "/" : `/folders/${encodeURIComponent(folder.id)}`;
+  const view = folder === null ? WORKSPACE_VIEWS.inbox : (getWorkspaceViewForFolder(folder.id, folder.userId) ?? WORKSPACE_VIEWS.actions);
+  const pathname = getWorkspacePath(view, folder);
   const query = new URLSearchParams();
 
   for (const statusId of statusIds) {
@@ -1243,10 +1303,11 @@ function getSelectedTodoIds(form: URLSearchParams): Array<string> {
 
 function parseApiViewPayload(value: unknown): ApiViewPayload {
   if (!isJsonRecord(value)) {
-    return { folderId: null, statusIds: null };
+    return { view: WORKSPACE_VIEWS.inbox, folderId: null, statusIds: null };
   }
 
   return {
+    view: parseWorkspaceViewMode(getNullableStringField(value, "view")),
     folderId: getNullableStringField(value, "folderId"),
     statusIds: getStringArrayField(value, "statusIds"),
   };
@@ -1318,6 +1379,7 @@ function parseReorderPayload(value: unknown): ReorderPayload {
       movedId: null,
       previousId: null,
       nextId: null,
+      view: WORKSPACE_VIEWS.inbox,
       folderId: null,
       statusIds: null,
     };
@@ -1327,6 +1389,7 @@ function parseReorderPayload(value: unknown): ReorderPayload {
     movedId: getNullableStringField(value, "movedId"),
     previousId: getNullableStringField(value, "previousId"),
     nextId: getNullableStringField(value, "nextId"),
+    view: parseWorkspaceViewMode(getNullableStringField(value, "view")),
     folderId: getNullableStringField(value, "folderId"),
     statusIds: getStringArrayField(value, "statusIds"),
   };
@@ -1366,6 +1429,100 @@ function getSafeReturnTo(rawReturnTo: string | null, fallback: string): string {
     : fallback;
 }
 
+function parseWorkspaceViewMode(rawView: string | null): WorkspaceViewMode {
+  if (rawView === WORKSPACE_VIEWS.actions || rawView === WORKSPACE_VIEWS.reference) {
+    return rawView;
+  }
+
+  return WORKSPACE_VIEWS.inbox;
+}
+
+function resolveFolderPathForView(
+  userId: string,
+  view: WorkspaceViewMode,
+  rawSegments: ReadonlyArray<string>,
+): ReadonlyArray<string> | null {
+  const roots = getWorkspaceRoots(userId);
+  const [firstSegment, ...remainingSegments] = rawSegments;
+
+  if (firstSegment !== undefined) {
+    if (firstSegment.localeCompare(roots.actions.name, undefined, { sensitivity: "accent" }) === 0) {
+      return [roots.actions.name, ...remainingSegments];
+    }
+
+    if (firstSegment.localeCompare(roots.reference.name, undefined, { sensitivity: "accent" }) === 0) {
+      return [roots.reference.name, ...remainingSegments];
+    }
+  }
+
+  if (view === WORKSPACE_VIEWS.actions) {
+    return [roots.actions.name, ...rawSegments];
+  }
+
+  if (view === WORKSPACE_VIEWS.reference) {
+    return [roots.reference.name, ...rawSegments];
+  }
+
+  return null;
+}
+
+function resolveLocationFolderId(
+  userId: string,
+  view: WorkspaceViewMode,
+  location: { readonly folderId: string | null; readonly folderPathSegments: ReadonlyArray<string> | null },
+): string | null | false {
+  if (location.folderPathSegments === null) {
+    return location.folderId;
+  }
+
+  const folderPath = resolveFolderPathForView(userId, view, location.folderPathSegments);
+
+  if (folderPath === null) {
+    return false;
+  }
+
+  return createFolderPath(userId, folderPath).id;
+}
+
+function normalizeWorkspaceSelection(
+  userId: string,
+  view: WorkspaceViewMode,
+  folderId: string | null,
+  roots: WorkspaceRoots,
+): { readonly view: WorkspaceViewMode; readonly folder: Folder | null } {
+  if (view === WORKSPACE_VIEWS.inbox) {
+    return { view, folder: null };
+  }
+
+  const root = view === WORKSPACE_VIEWS.actions ? roots.actions : roots.reference;
+  const resolvedFolder = folderId === null ? root : findFolderForUser(folderId, userId);
+
+  if (resolvedFolder === null) {
+    throw new NotFoundApiError("Folder not found");
+  }
+
+  if (resolvedFolder.id !== root.id && !isFolderInSubtree(userId, root.id, resolvedFolder.id)) {
+    throw new NotFoundApiError("Folder not found");
+  }
+
+  return { view, folder: resolvedFolder };
+}
+
+function getWorkspaceViewFromUrl(url: URL, userId: string): WorkspaceViewMode {
+  return parseWorkspaceViewRoute(url.pathname, userId)?.view ?? WORKSPACE_VIEWS.inbox;
+}
+
+function getWorkspacePath(view: WorkspaceViewMode, folder: Folder | null): string {
+  if (view === WORKSPACE_VIEWS.inbox || folder === null) {
+    return "/";
+  }
+
+  const base = view === WORKSPACE_VIEWS.actions ? "/actions" : "/reference";
+  return folder.parentId === null
+    ? base
+    : `${base}/folders/${encodeURIComponent(folder.id)}`;
+}
+
 function makeLocalUrl(path: string): URL {
   return new URL(path, "http://local.todo");
 }
@@ -1378,6 +1535,53 @@ async function authenticateRequest(request: IncomingMessage): Promise<Authentica
 
 function parseFolderRoute(pathname: string): RouteParams | null {
   return parseResourceRoute(pathname, "folders", "view");
+}
+
+function parseWorkspaceViewRoute(
+  pathname: string,
+  userId?: string,
+): { readonly view: WorkspaceViewMode; readonly folder: Folder | null } | null {
+  if (pathname === "/") {
+    return { view: WORKSPACE_VIEWS.inbox, folder: null };
+  }
+
+  const segments = pathname.split("/").filter((segment) => segment.length > 0);
+
+  if (segments.length === 1 && (segments[0] === WORKSPACE_VIEWS.actions || segments[0] === WORKSPACE_VIEWS.reference)) {
+    if (userId === undefined) {
+      return { view: segments[0], folder: null };
+    }
+
+    const roots = getWorkspaceRoots(userId);
+    return { view: segments[0], folder: segments[0] === WORKSPACE_VIEWS.actions ? roots.actions : roots.reference };
+  }
+
+  if (
+    segments.length === 3
+    && (segments[0] === WORKSPACE_VIEWS.actions || segments[0] === WORKSPACE_VIEWS.reference)
+    && segments[1] === "folders"
+  ) {
+    const folderId = segments[2];
+
+    if (folderId === undefined) {
+      return null;
+    }
+
+    try {
+      const decodedFolderId = decodeURIComponent(folderId);
+
+      if (userId === undefined) {
+        return { view: segments[0], folder: null };
+      }
+
+      const folder = findFolderForUser(decodedFolderId, userId);
+      return folder === null ? null : { view: segments[0], folder };
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 
 function parseTodoRoute(pathname: string): RouteParams | null {

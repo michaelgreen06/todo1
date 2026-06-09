@@ -1,4 +1,4 @@
-import type { Folder, Status, TodoItem, WorkspaceSelection, WorkspaceView } from "./workspace-types";
+import type { Folder, Status, TodoItem, WorkspaceSelection, WorkspaceView, WorkspaceViewMode } from "./workspace-types";
 
 type ApiError = {
   readonly error: string;
@@ -190,8 +190,12 @@ function getApiErrorMessage(value: unknown): string {
 
 function isWorkspaceView(value: unknown): value is WorkspaceView {
   return isRecord(value)
+    && isWorkspaceViewMode(value["view"])
     && isRecord(value["user"])
     && typeof value["user"]["email"] === "string"
+    && isRecord(value["roots"])
+    && isFolder(value["roots"]["actions"])
+    && isFolder(value["roots"]["reference"])
     && (value["folder"] === null || isFolder(value["folder"]))
     && isArrayOf(value["folders"], isFolder)
     && isArrayOf(value["ancestors"], isFolder)
@@ -199,6 +203,10 @@ function isWorkspaceView(value: unknown): value is WorkspaceView {
     && isArrayOf(value["todos"], isTodoItem)
     && isArrayOf(value["statuses"], isStatus)
     && isArrayOf(value["selectedStatusIds"], isString);
+}
+
+function isWorkspaceViewMode(value: unknown): value is WorkspaceViewMode {
+  return value === "inbox" || value === "actions" || value === "reference";
 }
 
 function isTodoItem(value: unknown): value is TodoItem {

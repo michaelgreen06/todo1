@@ -45,11 +45,16 @@ test("folder hierarchy and inbox", async (suite) => {
       assert.equal(reused.name, "Regen Hub");
       assert.deepEqual(listTodoItems(user.id, null, [activeId]).map((item) => item.id), [inbox.id]);
       assert.deepEqual(listTodoItems(user.id, regen.id, [activeId]).map((item) => item.id), [filed.id]);
-      assert.deepEqual(listFolders(user.id, [activeId]).map((folder) => [folder.name, folder.directItemCount]), [
+      assert.deepEqual(
+        listFolders(user.id, [activeId])
+          .filter((folder) => folder.name !== "Actions" && folder.name !== "Reference")
+          .map((folder) => [folder.name, folder.directItemCount]),
+        [
         ["2026-06-03", 1],
         ["Meetings", 0],
         ["Regen Hub", 1],
-      ]);
+        ],
+      );
     });
   });
 
@@ -119,6 +124,32 @@ test("folder hierarchy and inbox", async (suite) => {
     });
   });
 
+  await suite.test("seeds reserved roots and reclassifies items when moving between inbox, actions, and reference", () => {
+    withDatabase(() => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("root-seeding@example.com");
+      const activeId = statusId(user.id, "Active");
+      const folderNames = listFolders(user.id, []).map((folder) => folder.name);
+      const actionsFolder = createFolderPath(user.id, ["Actions", "Errands"]);
+      const referenceFolder = createFolderPath(user.id, ["Reference", "Garden"]);
+      const item = createTodoItem(user.id, "Classify me", "Body");
+
+      assert.deepEqual(folderNames, ["Actions", "Reference"]);
+      assert.equal(listTodoItems(user.id, null, [activeId])[0]?.kind, "todo");
+
+      assert.equal(moveTodoItemToLocation(item.id, user.id, actionsFolder.id), true);
+      assert.equal(listTodoItems(user.id, actionsFolder.id, [activeId])[0]?.kind, "todo");
+
+      assert.equal(moveTodoItemToLocation(item.id, user.id, referenceFolder.id), true);
+      assert.equal(listTodoItems(user.id, referenceFolder.id, [activeId])[0]?.kind, "reference");
+
+      assert.equal(moveTodoItemToLocation(item.id, user.id, null), true);
+      const returnedToInbox = listTodoItems(user.id, null, [activeId])[0];
+      assert.equal(returnedToInbox?.nodeId, null);
+      assert.equal(returnedToInbox?.kind, "reference");
+    });
+  });
+
   await suite.test("protects folder pages and mutations by ownership", async () => {
     await withDatabaseAsync(async () => {
       initializeDatabase();
@@ -143,10 +174,10 @@ test("folder hierarchy and inbox", async (suite) => {
         method: "POST",
         url: `/todos/${secret.id}/location`,
         headers: { cookie },
-        body: "folderPath=Should+Not+Exist&returnTo=%2F",
+        body: "folderPath=Actions+%2F+Should+Not+Exist&returnTo=%2F",
       });
       assert.equal(pathMoveResponse.statusCode, 404);
-      assert.deepEqual(listFolders(intruder.id, []), []);
+      assert.deepEqual(listFolders(intruder.id, []).map((folder) => folder.name), ["Actions", "Reference"]);
     });
   });
 
@@ -159,7 +190,7 @@ test("folder hierarchy and inbox", async (suite) => {
         method: "POST",
         url: "/folders",
         headers: { cookie },
-        body: "folderPath=Meetings+%2F+Regen+Hub&returnTo=%2F",
+        body: "folderPath=Meetings+%2F+Regen+Hub&returnTo=%2Factions",
       });
       assert.equal(folderResponse.statusCode, 303);
       const regen = listFolders(user.id, []).find((folder) => folder.name === "Regen Hub");
@@ -216,7 +247,7 @@ test("folder hierarchy and inbox", async (suite) => {
         method: "POST",
         url: "/todos/bulk/location",
         headers: { cookie },
-        body: `itemId=${encodeURIComponent(first.id)}&itemId=${encodeURIComponent(second.id)}&folderPath=Projects+%2F+Bulk&returnTo=${encodeURIComponent(`/?status=${activeId}`)}`,
+        body: `itemId=${encodeURIComponent(first.id)}&itemId=${encodeURIComponent(second.id)}&folderPath=Actions+%2F+Projects+%2F+Bulk&returnTo=${encodeURIComponent(`/?status=${activeId}`)}`,
       });
 
       assert.equal(response.statusCode, 303);
@@ -245,11 +276,11 @@ test("folder hierarchy and inbox", async (suite) => {
         method: "POST",
         url: "/todos/bulk/location",
         headers: { cookie },
-        body: `itemId=${encodeURIComponent(intruderItem.id)}&itemId=${encodeURIComponent(ownerItem.id)}&folderPath=Should+Not+Exist&returnTo=${encodeURIComponent(`/?status=${activeId}`)}`,
+        body: `itemId=${encodeURIComponent(intruderItem.id)}&itemId=${encodeURIComponent(ownerItem.id)}&folderPath=Actions+%2F+Should+Not+Exist&returnTo=${encodeURIComponent(`/?status=${activeId}`)}`,
       });
 
       assert.equal(response.statusCode, 404);
-      assert.deepEqual(listFolders(intruder.id, []), []);
+      assert.deepEqual(listFolders(intruder.id, []).map((folder) => folder.name), ["Actions", "Reference"]);
       assert.deepEqual(listTodoItems(intruder.id, null, [activeId]).map((todo) => todo.id), [intruderItem.id]);
     });
   });
@@ -261,7 +292,7 @@ test("folder hierarchy and inbox", async (suite) => {
       const statuses = listStatuses(user.id);
       const activeId = requiredStatusId(statuses, "Active");
       const archivedId = requiredStatusId(statuses, "Archived");
-      const folder = createFolderPath(user.id, ["Visible Folder"]);
+      const folder = createFolderPath(user.id, ["Actions", "Visible Folder"]);
       const active = createTodoItem(user.id, "Active visible", "Active body", folder.id);
       const archived = createTodoItem(user.id, "Archived hidden by default", "Archived body", folder.id);
       changeItemStatus(archived.id, user.id, archivedId, null);
@@ -276,7 +307,7 @@ test("folder hierarchy and inbox", async (suite) => {
         method: "POST",
         url: "/api/workspace/view",
         cookie,
-        body: { folderId: folder.id, statusIds: null },
+        body: { view: "actions", folderId: folder.id, statusIds: null },
       });
       assert.equal(defaultViewResponse.statusCode, 200);
       assert.deepEqual(JSON.parse(defaultViewResponse.body).workspace.todos.map((todo) => todo.id), [active.id]);
@@ -285,7 +316,7 @@ test("folder hierarchy and inbox", async (suite) => {
         method: "POST",
         url: "/api/workspace/view",
         cookie,
-        body: { folderId: folder.id, statusIds: [activeId, archivedId] },
+        body: { view: "actions", folderId: folder.id, statusIds: [activeId, archivedId] },
       });
       assert.equal(filteredViewResponse.statusCode, 200);
       assert.deepEqual(JSON.parse(filteredViewResponse.body).workspace.todos.map((todo) => todo.id).sort(), [active.id, archived.id].sort());
@@ -322,7 +353,7 @@ test("folder hierarchy and inbox", async (suite) => {
       const user = findOrCreateUserByEmail("api-workspace@example.com");
       const activeId = statusId(user.id, "Active");
       const completedId = statusId(user.id, "Completed");
-      const folder = createFolderPath(user.id, ["Projects"]);
+      const folder = createFolderPath(user.id, ["Actions", "Projects"]);
       const item = createTodoItem(user.id, "API item", "API body", folder.id);
       const cookie = createSessionCookie(user.id);
 
@@ -331,13 +362,17 @@ test("folder hierarchy and inbox", async (suite) => {
 
       const defaultResponse = await sendRequest({ method: "GET", url: "/api/workspace/default", headers: { cookie } });
       assert.equal(defaultResponse.statusCode, 200);
-      assert.deepEqual(JSON.parse(defaultResponse.body).workspace.selectedStatusIds, [activeId]);
+      const defaultWorkspace = JSON.parse(defaultResponse.body).workspace;
+      assert.equal(defaultWorkspace.view, "inbox");
+      assert.deepEqual(defaultWorkspace.selectedStatusIds, [activeId]);
+      assert.equal(defaultWorkspace.roots.actions.name, "Actions");
+      assert.equal(defaultWorkspace.roots.reference.name, "Reference");
 
       const viewResponse = await sendJsonRequest({
         method: "POST",
         url: "/api/workspace/view",
         cookie,
-        body: { folderId: folder.id, statusIds: [activeId, completedId] },
+        body: { view: "actions", folderId: folder.id, statusIds: [activeId, completedId] },
       });
       assert.equal(viewResponse.statusCode, 200);
       const view = JSON.parse(viewResponse.body).workspace;
@@ -358,7 +393,7 @@ test("folder hierarchy and inbox", async (suite) => {
         method: "POST",
         url: "/api/folders",
         cookie,
-        body: { folderPath: "Projects / API", folderId: null, statusIds: [activeId] },
+        body: { view: "actions", folderPath: "Projects / API", folderId: null, statusIds: [activeId] },
       });
       assert.equal(folderResponse.statusCode, 201);
       const folder = JSON.parse(folderResponse.body).folder;
@@ -403,7 +438,7 @@ test("folder hierarchy and inbox", async (suite) => {
         method: "POST",
         url: `/api/folders/${folder.id}/rename`,
         cookie,
-        body: { name: "API Renamed", folderId: folder.id, statusIds: [activeId, completedId] },
+        body: { view: "actions", name: "API Renamed", folderId: folder.id, statusIds: [activeId, completedId] },
       });
       assert.equal(renamedResponse.statusCode, 200);
       assert.equal(JSON.parse(renamedResponse.body).workspace.folder.name, "API Renamed");
@@ -425,16 +460,16 @@ test("folder hierarchy and inbox", async (suite) => {
         method: "POST",
         url: "/api/todos/bulk/location",
         cookie,
-        body: { itemIds: [first.id, ownerItem.id], folderId: null, folderPath: "Should Not Exist", statusIds: [activeId] },
+        body: { view: "inbox", itemIds: [first.id, ownerItem.id], folderId: null, folderPath: "Actions / Should Not Exist", statusIds: [activeId] },
       });
       assert.equal(blockedResponse.statusCode, 404);
-      assert.deepEqual(listFolders(intruder.id, []), []);
+      assert.deepEqual(listFolders(intruder.id, []).map((folder) => folder.name), ["Actions", "Reference"]);
 
       const bulkResponse = await sendJsonRequest({
         method: "POST",
         url: "/api/todos/bulk/location",
         cookie,
-        body: { itemIds: [first.id, second.id], folderId: null, folderPath: "Moved", statusIds: [activeId] },
+        body: { view: "inbox", itemIds: [first.id, second.id], folderId: null, folderPath: "Actions / Moved", statusIds: [activeId] },
       });
       assert.equal(bulkResponse.statusCode, 200);
       const movedFolder = listFolders(intruder.id, [activeId]).find((folder) => folder.name === "Moved");
@@ -448,6 +483,7 @@ test("folder hierarchy and inbox", async (suite) => {
           movedId: second.id,
           previousId: first.id,
           nextId: null,
+          view: "actions",
           folderId: movedFolder.id,
           statusIds: [activeId],
         },
