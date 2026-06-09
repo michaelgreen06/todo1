@@ -150,6 +150,48 @@ legend {
   margin-top: 0;
 }
 
+.sidebar-nav,
+.sidebar-section {
+  display: grid;
+  gap: .45rem;
+}
+
+.sidebar-section + .sidebar-section {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(222, 212, 189, .75);
+}
+
+.sidebar-section-label,
+.sidebar-section-value {
+  margin: 0;
+}
+
+.sidebar-section-label {
+  font-size: .74rem;
+  font-weight: 900;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.sidebar-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .75rem;
+}
+
+.sidebar-section-value {
+  font-weight: 900;
+  color: var(--accent-dark);
+}
+
+.sidebar-empty {
+  margin: 0;
+  padding: .2rem .1rem 0;
+}
+
 .folder-link {
   width: 100%;
   min-height: auto;
@@ -162,6 +204,11 @@ legend {
   background: transparent;
   color: var(--accent-dark);
   text-align: left;
+}
+
+.folder-root-link {
+  border: 1px solid rgba(31, 122, 77, .18);
+  background: rgba(223, 241, 223, .42);
 }
 
 .folder-link:hover,

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -199,6 +199,44 @@ describe("WorkspaceApp", () => {
     expect(screen.getByRole("button", { name: "Reference" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Project" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Add folder path")).not.toBeInTheDocument();
+  });
+
+  it("filters move locations by selected kind and hides location for inbox", async () => {
+    const user = userEvent.setup();
+    const referenceChild: Folder = {
+      ...projectFolder,
+      id: "folder-2",
+      parentId: "reference-root",
+      name: "Garden",
+    };
+
+    globalThis.fetch = async (): Promise<Response> => jsonResponse({
+      workspace: makeWorkspace({
+        folders: [actionsRoot, referenceRoot, projectFolder, referenceChild],
+      }),
+    });
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByText("Call client")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Move" }));
+
+    const locationSelect = screen.getByLabelText("Existing location");
+    expect(locationSelect).toBeInTheDocument();
+    expect(within(locationSelect).getByRole("option", { name: "Actions" })).toBeInTheDocument();
+    expect(within(locationSelect).getByRole("option", { name: "Project" })).toBeInTheDocument();
+    expect(within(locationSelect).queryByRole("option", { name: "Reference" })).not.toBeInTheDocument();
+    expect(within(locationSelect).queryByRole("option", { name: "Garden" })).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Kind"), "reference");
+    const referenceLocationSelect = screen.getByLabelText("Existing location");
+    expect(within(referenceLocationSelect).getByRole("option", { name: "Reference" })).toBeInTheDocument();
+    expect(within(referenceLocationSelect).getByRole("option", { name: "Garden" })).toBeInTheDocument();
+    expect(within(referenceLocationSelect).queryByRole("option", { name: "Project" })).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Kind"), "inbox");
+    expect(screen.queryByLabelText("Existing location")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/create new location/i)).not.toBeInTheDocument();
   });
 
   it("clears stale folder form state before opening create item dialog", async () => {
@@ -435,6 +473,7 @@ describe("WorkspaceApp", () => {
 function makeWorkspace(overrides: {
   readonly view?: WorkspaceView["view"];
   readonly folder?: Folder | null;
+  readonly folders?: ReadonlyArray<Folder>;
   readonly todos?: ReadonlyArray<TodoItem>;
   readonly selectedStatusIds?: ReadonlyArray<string>;
 } = {}): WorkspaceView {
@@ -449,7 +488,7 @@ function makeWorkspace(overrides: {
       reference: referenceRoot,
     },
     folder,
-    folders: [actionsRoot, referenceRoot, projectFolder],
+    folders: overrides.folders ?? [actionsRoot, referenceRoot, projectFolder],
     ancestors: folder === null
       ? []
       : (folder.id === actionsRoot.id || folder.id === referenceRoot.id

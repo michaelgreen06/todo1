@@ -593,6 +593,7 @@ export function WorkspaceApp(): ReactElement {
         setSelectedItemIds([]);
       } else {
         await moveTodo(item.id, {
+          view: selection.view,
           folderId: nullableFormId(form, "folderId"),
           folderPath: getFormString(form, "folderPath"),
         });
@@ -874,10 +875,26 @@ export function WorkspaceApp(): ReactElement {
             <BulkStatusDialog state={dialog} statuses={workspace.statuses} isSaving={formStatus.isSaving} onSubmit={saveBulkStatus} />
           ) : null}
           {dialog.type === "move" ? (
-            <MoveDialog item={dialog.item} folders={workspace.folders} selectedCount={1} isSaving={formStatus.isSaving} onSubmit={saveMove} />
+            <MoveDialog
+              item={dialog.item}
+              currentView={workspace.view}
+              roots={workspace.roots}
+              folders={workspace.folders}
+              selectedCount={1}
+              isSaving={formStatus.isSaving}
+              onSubmit={saveMove}
+            />
           ) : null}
           {dialog.type === "bulk-move" ? (
-            <MoveDialog item={null} folders={workspace.folders} selectedCount={selectedItems.length} isSaving={formStatus.isSaving} onSubmit={saveMove} />
+            <MoveDialog
+              item={null}
+              currentView={workspace.view}
+              roots={workspace.roots}
+              folders={workspace.folders}
+              selectedCount={selectedItems.length}
+              isSaving={formStatus.isSaving}
+              onSubmit={saveMove}
+            />
           ) : null}
         </DialogShell>
       )}
@@ -897,39 +914,67 @@ function FolderNavigation(props: {
   const root = props.view === "actions"
     ? props.roots.actions
     : (props.view === "reference" ? props.roots.reference : null);
+  const rootChildren = root === null
+    ? []
+    : props.folders.filter((folder) => folder.parentId === root.id);
 
   return (
-    <nav aria-label="Folder navigation">
-      <button
-        type="button"
-        className={`folder-link ${props.view === "inbox" ? "selected" : ""}`}
-        onClick={() => { props.onViewSelect("inbox"); }}
-      >
-        <span>Inbox</span><span>{props.inboxCount.toString()}</span>
-      </button>
-      <button
-        type="button"
-        className={`folder-link ${props.view === "actions" ? "selected" : ""}`}
-        onClick={() => { props.onViewSelect("actions"); }}
-      >
-        <span>{props.roots.actions.name}</span><span />
-      </button>
-      <button
-        type="button"
-        className={`folder-link ${props.view === "reference" ? "selected" : ""}`}
-        onClick={() => { props.onViewSelect("reference"); }}
-      >
-        <span>{props.roots.reference.name}</span><span />
-      </button>
+    <nav className="sidebar-nav" aria-label="Folder navigation">
+      <div className="sidebar-section">
+        <p className="sidebar-section-label">Views</p>
+        <button
+          type="button"
+          className={`folder-link ${props.view === "inbox" ? "selected" : ""}`}
+          onClick={() => { props.onViewSelect("inbox"); }}
+        >
+          <span>Inbox</span><span>{props.inboxCount.toString()}</span>
+        </button>
+        <button
+          type="button"
+          aria-label={props.roots.actions.name}
+          className={`folder-link ${props.view === "actions" ? "selected" : ""}`}
+          onClick={() => { props.onViewSelect("actions"); }}
+        >
+          <span>{props.roots.actions.name}</span><span>View</span>
+        </button>
+        <button
+          type="button"
+          aria-label={props.roots.reference.name}
+          className={`folder-link ${props.view === "reference" ? "selected" : ""}`}
+          onClick={() => { props.onViewSelect("reference"); }}
+        >
+          <span>{props.roots.reference.name}</span><span>View</span>
+        </button>
+      </div>
       {root === null ? null : (
-        <ul className="folder-tree">
-          <FolderBranch
-            folder={root}
-            folders={props.folders}
-            selectedFolderId={props.selectedFolderId}
-            onSelect={props.onSelect}
-          />
-        </ul>
+        <div className="sidebar-section">
+          <div className="sidebar-section-heading">
+            <p className="sidebar-section-label">Current view</p>
+            <p className="sidebar-section-value">{root.name}</p>
+          </div>
+          <button
+            type="button"
+            className={`folder-link folder-root-link ${props.selectedFolderId === root.id ? "selected" : ""}`}
+            onClick={() => { props.onSelect(root.id); }}
+          >
+            <span>All {root.name}</span><span>{root.directItemCount.toString()}</span>
+          </button>
+          {rootChildren.length === 0 ? (
+            <p className="muted sidebar-empty">No folders yet.</p>
+          ) : (
+            <ul className="folder-tree">
+              {rootChildren.map((folder) => (
+                <FolderBranch
+                  key={folder.id}
+                  folder={folder}
+                  folders={props.folders}
+                  selectedFolderId={props.selectedFolderId}
+                  onSelect={props.onSelect}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </nav>
   );
@@ -1269,22 +1314,81 @@ function BulkStatusDialog(props: {
 
 function MoveDialog(props: {
   readonly item: TodoItem | null;
+  readonly currentView: WorkspaceViewMode;
+  readonly roots: WorkspaceView["roots"];
   readonly folders: ReadonlyArray<Folder>;
   readonly selectedCount: number;
   readonly isSaving: boolean;
   readonly onSubmit: (event: FormEvent<HTMLFormElement>, item: TodoItem | null) => Promise<void>;
 }): ReactElement {
+  const [targetKind, setTargetKind] = useState<WorkspaceViewMode>(() => getMoveTargetKind(props.item, props.currentView, props.roots, props.folders));
+  const [targetFolderId, setTargetFolderId] = useState<string>(() => {
+    if (targetKind === "actions") {
+      return getInitialTargetFolderId(props.item, props.roots.actions.id, props.roots, props.folders);
+    }
+
+    if (targetKind === "reference") {
+      return getInitialTargetFolderId(props.item, props.roots.reference.id, props.roots, props.folders);
+    }
+
+    return "";
+  });
+
+  const locationRoot = targetKind === "actions"
+    ? props.roots.actions
+    : (targetKind === "reference" ? props.roots.reference : null);
+
   return (
     <form className="stack" onSubmit={(event) => { void props.onSubmit(event, props.item); }}>
       <h1>{props.item === null ? "Move selected items" : "Move item"}</h1>
       <p className="muted">{props.item === null ? `${props.selectedCount.toString()} selected` : props.item.title ?? props.item.body}</p>
-      <label htmlFor="move-folder-id">Existing location</label>
-      <select id="move-folder-id" name="folderId" defaultValue={props.item?.nodeId ?? ""}>
-        <option value="">Inbox</option>
-        <FolderOptions folders={props.folders} selectedId={props.item?.nodeId ?? null} />
+      <label htmlFor="move-kind">Kind</label>
+      <select
+        id="move-kind"
+        value={targetKind}
+        onChange={(event) => {
+          const nextKind = parseWorkspaceViewMode(event.currentTarget.value);
+          setTargetKind(nextKind);
+
+          if (nextKind === "actions") {
+            setTargetFolderId(props.roots.actions.id);
+            return;
+          }
+
+          if (nextKind === "reference") {
+            setTargetFolderId(props.roots.reference.id);
+            return;
+          }
+
+          setTargetFolderId("");
+        }}
+      >
+        <option value="inbox">Inbox</option>
+        <option value="actions">Actions</option>
+        <option value="reference">Reference</option>
       </select>
-      <label htmlFor="folderPath">Or create absolute folder path <span className="muted">(optional)</span></label>
-      <input id="folderPath" name="folderPath" type="text" placeholder="Errands / Costco" />
+      {locationRoot === null ? (
+        <input type="hidden" name="folderId" value="" />
+      ) : (
+        <>
+          <label htmlFor="move-folder-id">Existing location</label>
+          <select
+            id="move-folder-id"
+            name="folderId"
+            value={targetFolderId}
+            onChange={(event) => { setTargetFolderId(event.currentTarget.value); }}
+          >
+            <option value={locationRoot.id}>{locationRoot.name}</option>
+            <FolderOptions
+              folders={props.folders}
+              selectedId={targetFolderId}
+              parentId={locationRoot.id}
+            />
+          </select>
+          <label htmlFor="folderPath">Or create new location <span className="muted">(optional)</span></label>
+          <input id="folderPath" name="folderPath" type="text" placeholder="devstuff / app feedback" />
+        </>
+      )}
       <button type="submit" disabled={props.isSaving}>{props.item === null ? "Move selected" : "Move item"}</button>
     </form>
   );
@@ -1314,6 +1418,73 @@ function getSelectionFromWorkspace(workspace: WorkspaceView): WorkspaceSelection
     folderId: workspace.folder?.id === rootId ? null : (workspace.folder?.id ?? null),
     statusIds: workspace.selectedStatusIds,
   };
+}
+
+function getMoveTargetKind(
+  item: TodoItem | null,
+  currentView: WorkspaceViewMode,
+  roots: WorkspaceView["roots"],
+  folders: ReadonlyArray<Folder>,
+): WorkspaceViewMode {
+  if (item?.nodeId === null) {
+    return "inbox";
+  }
+
+  if (item?.nodeId !== undefined && item.nodeId !== null) {
+    return getFolderViewForMove(item.nodeId, roots, folders) ?? currentView;
+  }
+
+  return currentView;
+}
+
+function getInitialTargetFolderId(
+  item: TodoItem | null,
+  fallbackFolderId: string,
+  roots: WorkspaceView["roots"],
+  folders: ReadonlyArray<Folder>,
+): string {
+  if (item?.nodeId === null) {
+    return fallbackFolderId;
+  }
+
+  if (item?.nodeId !== undefined && item.nodeId !== null) {
+    return getFolderViewForMove(item.nodeId, roots, folders) === getFolderViewForMove(fallbackFolderId, roots, folders)
+      ? item.nodeId
+      : fallbackFolderId;
+  }
+
+  return fallbackFolderId;
+}
+
+function getFolderViewForMove(
+  folderId: string,
+  roots: WorkspaceView["roots"],
+  folders: ReadonlyArray<Folder>,
+): WorkspaceViewMode | null {
+  if (folderId === roots.actions.id) {
+    return "actions";
+  }
+
+  if (folderId === roots.reference.id) {
+    return "reference";
+  }
+
+  const byId = new Map(folders.map((folder) => [folder.id, folder] as const));
+  let currentFolder = byId.get(folderId) ?? null;
+
+  while (currentFolder !== null) {
+    if (currentFolder.parentId === roots.actions.id) {
+      return "actions";
+    }
+
+    if (currentFolder.parentId === roots.reference.id) {
+      return "reference";
+    }
+
+    currentFolder = currentFolder.parentId === null ? null : (byId.get(currentFolder.parentId) ?? null);
+  }
+
+  return null;
 }
 
 function errorMessage(error: unknown, fallback: string): string {

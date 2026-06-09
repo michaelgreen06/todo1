@@ -150,6 +150,36 @@ test("folder hierarchy and inbox", async (suite) => {
     });
   });
 
+  await suite.test("creates relative move paths under the selected destination root", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("relative-move@example.com");
+      const cookie = createSessionCookie(user.id);
+      const item = createTodoItem(user.id, "Feedback", "Capture body");
+      const referenceRoot = listFolders(user.id, []).find((folder) => folder.name === "Reference");
+
+      assert.notEqual(referenceRoot, undefined);
+
+      const response = await sendJsonRequest({
+        method: "POST",
+        url: `/api/todos/${item.id}/location`,
+        cookie,
+        body: {
+          view: "inbox",
+          folderId: referenceRoot.id,
+          folderPath: "devstuff / app feedback",
+        },
+      });
+
+      assert.equal(response.statusCode, 200);
+      const moved = JSON.parse(response.body).item;
+      const appFeedback = listFolders(user.id, []).find((folder) => folder.name === "app feedback");
+      assert.notEqual(appFeedback, undefined);
+      assert.equal(moved.nodeId, appFeedback.id);
+      assert.equal(moved.kind, "reference");
+    });
+  });
+
   await suite.test("protects folder pages and mutations by ownership", async () => {
     await withDatabaseAsync(async () => {
       initializeDatabase();

@@ -736,7 +736,7 @@ async function handleApiCreateFolder(request: IncomingMessage, response: ServerR
     return;
   }
 
-  const folderPath = resolveFolderPathForView(user.id, viewRequest.view, pathResult.value);
+  const folderPath = resolveFolderPathForLocation(user.id, viewRequest.view, viewRequest.folderId, pathResult.value);
 
   if (folderPath === null) {
     sendApiValidationError(response, "Choose Actions or Reference before creating folders.");
@@ -869,7 +869,8 @@ async function handleCreateFolder(request: IncomingMessage, response: ServerResp
     return;
   }
 
-  const folderPath = resolveFolderPathForView(user.id, view, pathResult.value);
+  const currentFolderId = parseWorkspaceViewRoute(makeLocalUrl(returnTo).pathname, user.id)?.folder?.id ?? null;
+  const folderPath = resolveFolderPathForLocation(user.id, view, currentFolderId, pathResult.value);
 
   if (folderPath === null) {
     sendTodoPageForReturnTo(response, user, returnTo, "Choose Actions or Reference before creating folders.");
@@ -1466,6 +1467,31 @@ function resolveFolderPathForView(
   return null;
 }
 
+function resolveFolderPathForLocation(
+  userId: string,
+  view: WorkspaceViewMode,
+  folderId: string | null,
+  rawSegments: ReadonlyArray<string>,
+): ReadonlyArray<string> | null {
+  const rootedPath = resolveFolderPathForView(userId, WORKSPACE_VIEWS.inbox, rawSegments);
+
+  if (rootedPath !== null) {
+    return rootedPath;
+  }
+
+  if (folderId !== null) {
+    const folder = findFolderForUser(folderId, userId);
+
+    if (folder === null) {
+      return null;
+    }
+
+    return [...listFolderAncestors(folder.id, userId).map((ancestor) => ancestor.name), ...rawSegments];
+  }
+
+  return resolveFolderPathForView(userId, view, rawSegments);
+}
+
 function resolveLocationFolderId(
   userId: string,
   view: WorkspaceViewMode,
@@ -1475,7 +1501,7 @@ function resolveLocationFolderId(
     return location.folderId;
   }
 
-  const folderPath = resolveFolderPathForView(userId, view, location.folderPathSegments);
+  const folderPath = resolveFolderPathForLocation(userId, view, location.folderId, location.folderPathSegments);
 
   if (folderPath === null) {
     return false;

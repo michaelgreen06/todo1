@@ -66,6 +66,7 @@ export async function changeStatus(itemId: string, input: {
 }
 
 export async function moveTodo(itemId: string, input: {
+  readonly view: WorkspaceViewMode;
   readonly folderId: string | null;
   readonly folderPath: string;
 }): Promise<TodoItem> {

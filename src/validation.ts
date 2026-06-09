@@ -164,7 +164,7 @@ export function validateLocationInput(
 
   const pathResult = validateFolderPath(folderPath);
   return pathResult.ok
-    ? { ok: true, value: { folderId: null, folderPathSegments: pathResult.value } }
+    ? { ok: true, value: { folderId, folderPathSegments: pathResult.value } }
     : pathResult;
 }
 
