@@ -485,9 +485,11 @@ async function handleApiRequest(
 }
 
 async function handleApiCreateTodo(request: IncomingMessage, response: ServerResponse, user: User): Promise<void> {
-  const payload = parseTodoPayload(await readApiJsonBody(request));
+  const rawPayload = await readApiJsonBody(request);
+  const payload = parseTodoPayload(rawPayload);
   const todoResult = validateTodoInput(payload.title, payload.body);
-  const locationResult = validateLocationInput(payload.folderId, null);
+  const locationResult = getApiLocationResult(rawPayload);
+  const view = parseApiViewPayload(rawPayload).view;
 
   if (!todoResult.ok) {
     sendApiValidationError(response, todoResult.message);
@@ -499,7 +501,12 @@ async function handleApiCreateTodo(request: IncomingMessage, response: ServerRes
     return;
   }
 
-  const folderId = locationResult.value.folderId;
+  const folderId = resolveLocationFolderId(user.id, view, locationResult.value);
+
+  if (folderId === false) {
+    sendApiValidationError(response, "Folder paths from Inbox must start with Actions or Reference.");
+    return;
+  }
 
   if (folderId !== null && findFolderForUser(folderId, user.id) === null) {
     sendJsonValue(response, 404, { error: "Folder not found" });

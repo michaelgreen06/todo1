@@ -495,7 +495,9 @@ export function WorkspaceApp(): ReactElement {
       await createTodo({
         title: getFormString(form, "title"),
         body: getFormString(form, "body"),
-        folderId: selection.view === "inbox" ? null : (workspace?.folder?.id ?? null),
+        view: parseWorkspaceViewMode(getFormString(form, "view")),
+        folderId: nullableFormId(form, "folderId"),
+        folderPath: getFormString(form, "folderPath"),
       });
       setDialog(null);
       await refreshCurrentWorkspace();
@@ -586,6 +588,7 @@ export function WorkspaceApp(): ReactElement {
       if (item === null) {
         await bulkMove({
           ...selection,
+          view: parseWorkspaceViewMode(getFormString(form, "view")),
           itemIds: selectedItemIds,
           folderId: nullableFormId(form, "folderId"),
           folderPath: getFormString(form, "folderPath"),
@@ -593,7 +596,7 @@ export function WorkspaceApp(): ReactElement {
         setSelectedItemIds([]);
       } else {
         await moveTodo(item.id, {
-          view: selection.view,
+          view: parseWorkspaceViewMode(getFormString(form, "view")),
           folderId: nullableFormId(form, "folderId"),
           folderPath: getFormString(form, "folderPath"),
         });
@@ -866,7 +869,14 @@ export function WorkspaceApp(): ReactElement {
       {dialog === null ? null : (
         <DialogShell onClose={() => { setDialog(null); setFormStatus(emptyFormStatus); }}>
           {dialog.type === "create" ? (
-            <CreateDialog isSaving={formStatus.isSaving} onSubmit={saveCreate} />
+            <CreateDialog
+              currentView={workspace.view}
+              folder={workspace.folder}
+              roots={workspace.roots}
+              folders={workspace.folders}
+              isSaving={formStatus.isSaving}
+              onSubmit={saveCreate}
+            />
           ) : null}
           {dialog.type === "status" ? (
             <StatusDialog item={dialog.item} statuses={workspace.statuses} isSaving={formStatus.isSaving} onSubmit={saveStatus} />
@@ -1239,6 +1249,10 @@ function DialogShell(props: {
 }
 
 function CreateDialog(props: {
+  readonly currentView: WorkspaceViewMode;
+  readonly folder: Folder | null;
+  readonly roots: WorkspaceView["roots"];
+  readonly folders: ReadonlyArray<Folder>;
   readonly isSaving: boolean;
   readonly onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
 }): ReactElement {
@@ -1249,6 +1263,13 @@ function CreateDialog(props: {
       <input id="create-title" name="title" type="text" maxLength={160} />
       <label htmlFor="create-body">Description</label>
       <textarea id="create-body" name="body" rows={7} required />
+      <LocationPicker
+        idPrefix="create"
+        initialKind={props.currentView}
+        initialFolderId={getInitialCreateFolderId(props.currentView, props.folder, props.roots)}
+        roots={props.roots}
+        folders={props.folders}
+      />
       <button type="submit" disabled={props.isSaving}>Add todo</button>
     </form>
   );
@@ -1321,47 +1342,64 @@ function MoveDialog(props: {
   readonly isSaving: boolean;
   readonly onSubmit: (event: FormEvent<HTMLFormElement>, item: TodoItem | null) => Promise<void>;
 }): ReactElement {
-  const [targetKind, setTargetKind] = useState<WorkspaceViewMode>(() => getMoveTargetKind(props.item, props.currentView, props.roots, props.folders));
-  const [targetFolderId, setTargetFolderId] = useState<string>(() => {
-    if (targetKind === "actions") {
-      return getInitialTargetFolderId(props.item, props.roots.actions.id, props.roots, props.folders);
-    }
-
-    if (targetKind === "reference") {
-      return getInitialTargetFolderId(props.item, props.roots.reference.id, props.roots, props.folders);
-    }
-
-    return "";
-  });
-
-  const locationRoot = targetKind === "actions"
-    ? props.roots.actions
-    : (targetKind === "reference" ? props.roots.reference : null);
+  const targetKind = getMoveTargetKind(props.item, props.currentView, props.roots, props.folders);
+  const targetFolderId = targetKind === "actions"
+    ? getInitialTargetFolderId(props.item, props.roots.actions.id, props.roots, props.folders)
+    : (targetKind === "reference" ? getInitialTargetFolderId(props.item, props.roots.reference.id, props.roots, props.folders) : "");
 
   return (
     <form className="stack" onSubmit={(event) => { void props.onSubmit(event, props.item); }}>
       <h1>{props.item === null ? "Move selected items" : "Move item"}</h1>
       <p className="muted">{props.item === null ? `${props.selectedCount.toString()} selected` : props.item.title ?? props.item.body}</p>
-      <label htmlFor="move-kind">Kind</label>
+      <LocationPicker
+        idPrefix="move"
+        initialKind={targetKind}
+        initialFolderId={targetFolderId}
+        roots={props.roots}
+        folders={props.folders}
+      />
+      <button type="submit" disabled={props.isSaving}>{props.item === null ? "Move selected" : "Move item"}</button>
+    </form>
+  );
+}
+
+function LocationPicker(props: {
+  readonly idPrefix: string;
+  readonly initialKind: WorkspaceViewMode;
+  readonly initialFolderId: string;
+  readonly roots: WorkspaceView["roots"];
+  readonly folders: ReadonlyArray<Folder>;
+}): ReactElement {
+  const [targetKind, setTargetKind] = useState<WorkspaceViewMode>(props.initialKind);
+  const [targetFolderId, setTargetFolderId] = useState<string>(props.initialFolderId);
+  const locationRoot = targetKind === "actions"
+    ? props.roots.actions
+    : (targetKind === "reference" ? props.roots.reference : null);
+
+  function changeKind(nextKind: WorkspaceViewMode): void {
+    setTargetKind(nextKind);
+
+    if (nextKind === "actions") {
+      setTargetFolderId(props.roots.actions.id);
+      return;
+    }
+
+    if (nextKind === "reference") {
+      setTargetFolderId(props.roots.reference.id);
+      return;
+    }
+
+    setTargetFolderId("");
+  }
+
+  return (
+    <>
+      <label htmlFor={`${props.idPrefix}-kind`}>Kind</label>
       <select
-        id="move-kind"
+        id={`${props.idPrefix}-kind`}
+        name="view"
         value={targetKind}
-        onChange={(event) => {
-          const nextKind = parseWorkspaceViewMode(event.currentTarget.value);
-          setTargetKind(nextKind);
-
-          if (nextKind === "actions") {
-            setTargetFolderId(props.roots.actions.id);
-            return;
-          }
-
-          if (nextKind === "reference") {
-            setTargetFolderId(props.roots.reference.id);
-            return;
-          }
-
-          setTargetFolderId("");
-        }}
+        onChange={(event) => { changeKind(parseWorkspaceViewMode(event.currentTarget.value)); }}
       >
         <option value="inbox">Inbox</option>
         <option value="actions">Actions</option>
@@ -1371,9 +1409,9 @@ function MoveDialog(props: {
         <input type="hidden" name="folderId" value="" />
       ) : (
         <>
-          <label htmlFor="move-folder-id">Existing location</label>
+          <label htmlFor={`${props.idPrefix}-folder-id`}>Existing location</label>
           <select
-            id="move-folder-id"
+            id={`${props.idPrefix}-folder-id`}
             name="folderId"
             value={targetFolderId}
             onChange={(event) => { setTargetFolderId(event.currentTarget.value); }}
@@ -1385,12 +1423,11 @@ function MoveDialog(props: {
               parentId={locationRoot.id}
             />
           </select>
-          <label htmlFor="folderPath">Or create new location <span className="muted">(optional)</span></label>
-          <input id="folderPath" name="folderPath" type="text" placeholder="devstuff / app feedback" />
+          <label htmlFor={`${props.idPrefix}-folder-path`}>Or create new location <span className="muted">(optional)</span></label>
+          <input id={`${props.idPrefix}-folder-path`} name="folderPath" type="text" placeholder="devstuff / app feedback" />
         </>
       )}
-      <button type="submit" disabled={props.isSaving}>{props.item === null ? "Move selected" : "Move item"}</button>
-    </form>
+    </>
   );
 }
 
@@ -1406,6 +1443,22 @@ function nullableFormId(form: FormData, key: string): string | null {
 
 function parseWorkspaceViewMode(value: string): WorkspaceViewMode {
   return value === "actions" || value === "reference" ? value : "inbox";
+}
+
+function getInitialCreateFolderId(
+  currentView: WorkspaceViewMode,
+  folder: Folder | null,
+  roots: WorkspaceView["roots"],
+): string {
+  if (currentView === "actions") {
+    return folder?.id ?? roots.actions.id;
+  }
+
+  if (currentView === "reference") {
+    return folder?.id ?? roots.reference.id;
+  }
+
+  return "";
 }
 
 function getSelectionFromWorkspace(workspace: WorkspaceView): WorkspaceSelection {

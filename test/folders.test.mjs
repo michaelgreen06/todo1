@@ -483,10 +483,11 @@ COMMIT;`,
         method: "POST",
         url: "/api/todos",
         cookie,
-        body: { title: "Created", body: "Created body", folderId: folder.id },
+        body: { title: "Created", body: "Created body", view: "actions", folderId: folder.id, folderPath: "" },
       });
       assert.equal(createResponse.statusCode, 201);
       const created = JSON.parse(createResponse.body).item;
+      assert.equal(created.nodeId, folder.id);
 
       const updateResponse = await sendJsonRequest({
         method: "PATCH",
@@ -523,6 +524,92 @@ COMMIT;`,
       });
       assert.equal(renamedResponse.statusCode, 200);
       assert.equal(JSON.parse(renamedResponse.body).workspace.folder.name, "API Renamed");
+    });
+  });
+
+  await suite.test("creates todos into existing and newly created API locations", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("api-create-locations@example.com");
+      const activeId = statusId(user.id, "Active");
+      const cookie = createSessionCookie(user.id);
+      const projects = createFolderPath(user.id, ["Actions", "Projects"]);
+
+      const existingResponse = await sendJsonRequest({
+        method: "POST",
+        url: "/api/todos",
+        cookie,
+        body: { title: "Existing", body: "Existing body", view: "actions", folderId: projects.id, folderPath: "" },
+      });
+      assert.equal(existingResponse.statusCode, 201);
+      assert.equal(JSON.parse(existingResponse.body).item.nodeId, projects.id);
+
+      const relativeResponse = await sendJsonRequest({
+        method: "POST",
+        url: "/api/todos",
+        cookie,
+        body: { title: "Relative", body: "Relative body", view: "actions", folderId: projects.id, folderPath: "Next / Later" },
+      });
+      assert.equal(relativeResponse.statusCode, 201);
+      const laterFolder = listFolders(user.id, [activeId]).find((folder) => folder.name === "Later");
+      assert.notEqual(laterFolder, undefined);
+      assert.equal(JSON.parse(relativeResponse.body).item.nodeId, laterFolder.id);
+      assert.ok(listFolderNames(user.id).includes("Next"));
+
+      const absoluteActionsResponse = await sendJsonRequest({
+        method: "POST",
+        url: "/api/todos",
+        cookie,
+        body: { title: "Absolute", body: "Absolute actions body", view: "inbox", folderId: null, folderPath: "Actions / Inbox Created" },
+      });
+      assert.equal(absoluteActionsResponse.statusCode, 201);
+      const inboxCreated = listFolders(user.id, [activeId]).find((folder) => folder.name === "Inbox Created");
+      assert.notEqual(inboxCreated, undefined);
+      assert.equal(JSON.parse(absoluteActionsResponse.body).item.nodeId, inboxCreated.id);
+
+      const absoluteReferenceResponse = await sendJsonRequest({
+        method: "POST",
+        url: "/api/todos",
+        cookie,
+        body: { title: "Reference", body: "Reference body", view: "inbox", folderId: null, folderPath: "Reference / People / Cora" },
+      });
+      assert.equal(absoluteReferenceResponse.statusCode, 201);
+      const cora = listFolders(user.id, [activeId]).find((folder) => folder.name === "Cora");
+      assert.notEqual(cora, undefined);
+      const referenceItem = JSON.parse(absoluteReferenceResponse.body).item;
+      assert.equal(referenceItem.nodeId, cora.id);
+      assert.equal(referenceItem.kind, "reference");
+    });
+  });
+
+  await suite.test("rejects create API locations with unauthorized or missing folder ids before creating anything", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const owner = findOrCreateUserByEmail("api-create-owner@example.com");
+      const intruder = findOrCreateUserByEmail("api-create-intruder@example.com");
+      const ownerFolder = createFolderPath(owner.id, ["Actions", "Secret"]);
+      const activeId = statusId(intruder.id, "Active");
+      const cookie = createSessionCookie(intruder.id);
+
+      const unauthorizedResponse = await sendJsonRequest({
+        method: "POST",
+        url: "/api/todos",
+        cookie,
+        body: { title: "Blocked", body: "Blocked body", view: "actions", folderId: ownerFolder.id, folderPath: "Child" },
+      });
+      assert.notEqual(unauthorizedResponse.statusCode, 201);
+      assert.deepEqual(listFolderNames(intruder.id), ["Actions", "Reference"]);
+      assert.deepEqual(listTodoItems(intruder.id, null, [activeId]), []);
+
+      const missingResponse = await sendJsonRequest({
+        method: "POST",
+        url: "/api/todos",
+        cookie,
+        body: { title: "Missing", body: "Missing body", view: "actions", folderId: "missing-folder", folderPath: "" },
+      });
+      assert.equal(missingResponse.statusCode, 404);
+      assert.deepEqual(listFolderNames(intruder.id), ["Actions", "Reference"]);
+      assert.deepEqual(listTodoItems(intruder.id, null, [activeId]), []);
     });
   });
 
@@ -583,6 +670,10 @@ function requiredStatusId(statuses, name) {
 
 function statusId(userId, name) {
   return requiredStatusId(listStatuses(userId), name);
+}
+
+function listFolderNames(userId) {
+  return listFolders(userId, []).map((folder) => folder.name);
 }
 
 function escapeRegExp(value) {

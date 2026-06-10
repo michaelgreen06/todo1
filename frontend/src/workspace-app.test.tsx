@@ -239,6 +239,149 @@ describe("WorkspaceApp", () => {
     expect(screen.queryByLabelText(/create new location/i)).not.toBeInTheDocument();
   });
 
+  it("defaults add item location to inbox when opened from inbox", async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = async (): Promise<Response> => jsonResponse({
+      workspace: makeWorkspace({ view: "inbox", folder: null }),
+    });
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Inbox" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add item" }));
+
+    expect(screen.getByLabelText("Kind")).toHaveValue("inbox");
+    expect(screen.queryByLabelText("Existing location")).not.toBeInTheDocument();
+  });
+
+  it("defaults add item location to the current nested folder", async () => {
+    const user = userEvent.setup();
+    const nestedFolder: Folder = {
+      ...projectFolder,
+      id: "folder-2",
+      parentId: "folder-1",
+      name: "Cora",
+    };
+    globalThis.fetch = async (): Promise<Response> => jsonResponse({
+      workspace: makeWorkspace({
+        view: "actions",
+        folder: nestedFolder,
+        folders: [actionsRoot, referenceRoot, projectFolder, nestedFolder],
+      }),
+    });
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Cora" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add item" }));
+
+    expect(screen.getByLabelText("Kind")).toHaveValue("actions");
+    expect(screen.getByLabelText("Existing location")).toHaveValue("folder-2");
+  });
+
+  it("filters add item locations by selected kind", async () => {
+    const user = userEvent.setup();
+    const referenceChild: Folder = {
+      ...projectFolder,
+      id: "folder-2",
+      parentId: "reference-root",
+      name: "Garden",
+    };
+
+    globalThis.fetch = async (): Promise<Response> => jsonResponse({
+      workspace: makeWorkspace({
+        folders: [actionsRoot, referenceRoot, projectFolder, referenceChild],
+      }),
+    });
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add item" }));
+
+    const locationSelect = screen.getByLabelText("Existing location");
+    expect(within(locationSelect).getByRole("option", { name: "Actions" })).toBeInTheDocument();
+    expect(within(locationSelect).getByRole("option", { name: "Project" })).toBeInTheDocument();
+    expect(within(locationSelect).queryByRole("option", { name: "Garden" })).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Kind"), "reference");
+    const referenceLocationSelect = screen.getByLabelText("Existing location");
+    expect(within(referenceLocationSelect).getByRole("option", { name: "Reference" })).toBeInTheDocument();
+    expect(within(referenceLocationSelect).getByRole("option", { name: "Garden" })).toBeInTheDocument();
+    expect(within(referenceLocationSelect).queryByRole("option", { name: "Project" })).not.toBeInTheDocument();
+  });
+
+  it("submits add item with the selected existing location", async () => {
+    const user = userEvent.setup();
+    const requests: Array<{ readonly path: string; readonly body: string }> = [];
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const path = input.toString();
+      requests.push({ path, body: typeof init?.body === "string" ? init.body : "" });
+
+      if (path === "/api/todos") {
+        return jsonResponse({ item: { ...inboxItem, id: "created-1", body: "Created body" } }, 201);
+      }
+
+      return jsonResponse({ workspace: makeWorkspace() });
+    };
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add item" }));
+    await user.type(screen.getByLabelText("Description"), "Created body");
+    await user.click(screen.getByRole("button", { name: "Add todo" }));
+
+    await waitFor(() => {
+      expect(requests).toContainEqual({
+        path: "/api/todos",
+        body: JSON.stringify({
+          title: "",
+          body: "Created body",
+          view: "actions",
+          folderId: "folder-1",
+          folderPath: "",
+        }),
+      });
+    });
+  });
+
+  it("submits add item with a new location path", async () => {
+    const user = userEvent.setup();
+    const requests: Array<{ readonly path: string; readonly body: string }> = [];
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const path = input.toString();
+      requests.push({ path, body: typeof init?.body === "string" ? init.body : "" });
+
+      if (path === "/api/todos") {
+        return jsonResponse({ item: { ...inboxItem, id: "created-2", body: "Created body" } }, 201);
+      }
+
+      return jsonResponse({ workspace: makeWorkspace() });
+    };
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add item" }));
+    await user.type(screen.getByLabelText("Description"), "Created body");
+    await user.type(screen.getByLabelText(/create new location/i), "Next / Later");
+    await user.click(screen.getByRole("button", { name: "Add todo" }));
+
+    await waitFor(() => {
+      expect(requests).toContainEqual({
+        path: "/api/todos",
+        body: JSON.stringify({
+          title: "",
+          body: "Created body",
+          view: "actions",
+          folderId: "folder-1",
+          folderPath: "Next / Later",
+        }),
+      });
+    });
+  });
+
   it("clears stale folder form state before opening create item dialog", async () => {
     const user = userEvent.setup();
     let folderCreateAttemptCount = 0;

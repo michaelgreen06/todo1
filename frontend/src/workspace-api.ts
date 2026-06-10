@@ -33,7 +33,9 @@ export async function loadWorkspace(selection: WorkspaceSelection): Promise<Work
 export async function createTodo(input: {
   readonly title: string;
   readonly body: string;
+  readonly view: WorkspaceViewMode;
   readonly folderId: string | null;
+  readonly folderPath: string;
 }): Promise<TodoItem> {
   const response = await fetchJson("/api/todos", {
     method: "POST",
