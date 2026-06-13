@@ -30,14 +30,14 @@ test("capture router", async (suite) => {
       kind: "folder",
       title: null,
       body: "peanut butter",
-      folderPath: ["Errands", "costco"],
+      folderPath: ["Actions", "Errands", "costco"],
       ruleName: "list-command",
     });
     assert.deepEqual(routeCaptureText("add oats to the natural grocers list."), {
       kind: "folder",
       title: null,
       body: "oats",
-      folderPath: ["Errands", "natural grocers"],
+      folderPath: ["Actions", "Errands", "natural grocers"],
       ruleName: "list-command",
     });
   });
@@ -47,7 +47,7 @@ test("capture router", async (suite) => {
       kind: "folder",
       title: null,
       body: "order a replacement aerator",
-      folderPath: ["Issues", "kitchen sink"],
+      folderPath: ["Actions", "Issues", "kitchen sink"],
       ruleName: "issue-command",
     });
   });
@@ -57,7 +57,7 @@ test("capture router", async (suite) => {
       kind: "folder",
       title: null,
       body: "ask about the launch checklist",
-      folderPath: ["Meetings", "regen hub"],
+      folderPath: ["Reference", "Meetings", "regen hub"],
       ruleName: "meeting-note-command",
     });
   });
@@ -67,7 +67,7 @@ test("capture router", async (suite) => {
       kind: "folder",
       title: null,
       body: "Sam that I am running ten minutes late",
-      folderPath: ["Messages"],
+      folderPath: ["Actions", "Messages"],
       ruleName: "message-command",
     });
   });

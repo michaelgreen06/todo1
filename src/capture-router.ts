@@ -40,25 +40,25 @@ export const CAPTURE_PROMPT_RULES: ReadonlyArray<CapturePromptRule> = [
   {
     name: "List",
     spokenPattern: "add peanut butter to my costco list",
-    destination: "Errands / costco",
+    destination: "Actions / Errands / costco",
     itemBody: "peanut butter",
   },
   {
     name: "Issue",
     spokenPattern: "add an issue for kitchen sink that order a replacement aerator",
-    destination: "Issues / kitchen sink",
+    destination: "Actions / Issues / kitchen sink",
     itemBody: "order a replacement aerator",
   },
   {
     name: "Meeting note",
     spokenPattern: "add meeting note to regen hub that ask about the launch checklist",
-    destination: "Meetings / regen hub",
+    destination: "Reference / Meetings / regen hub",
     itemBody: "ask about the launch checklist",
   },
   {
     name: "Message",
     spokenPattern: "message Sam that I am running ten minutes late",
-    destination: "Messages",
+    destination: "Actions / Messages",
     itemBody: "Sam that I am running ten minutes late",
   },
 ];
@@ -129,7 +129,7 @@ function routeListCommand(text: string): FolderCaptureRoute | null {
     kind: "folder",
     title: null,
     body: item,
-    folderPath: ["Errands", list],
+    folderPath: ["Actions", "Errands", list],
     ruleName: "list-command",
   };
 }
@@ -152,7 +152,7 @@ function routeIssueCommand(text: string): FolderCaptureRoute | null {
     kind: "folder",
     title: null,
     body,
-    folderPath: ["Issues", folder],
+    folderPath: ["Actions", "Issues", folder],
     ruleName: "issue-command",
   };
 }
@@ -175,7 +175,7 @@ function routeMeetingNoteCommand(text: string): FolderCaptureRoute | null {
     kind: "folder",
     title: null,
     body,
-    folderPath: ["Meetings", folder],
+    folderPath: ["Reference", "Meetings", folder],
     ruleName: "meeting-note-command",
   };
 }
@@ -197,7 +197,7 @@ function routeMessageCommand(text: string): FolderCaptureRoute | null {
     kind: "folder",
     title: null,
     body,
-    folderPath: ["Messages"],
+    folderPath: ["Actions", "Messages"],
     ruleName: "message-command",
   };
 }

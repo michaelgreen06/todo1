@@ -634,11 +634,11 @@ test("unified capture server MVP", async (suite) => {
     });
   });
 
-  await suite.test("routes spoken list captures into Errands list folders and reuses existing folders", async () => {
+  await suite.test("routes spoken list captures into Actions / Errands list folders and reuses existing folders", async () => {
     await withDatabaseAsync(async (databasePath) => {
       initializeDatabase();
       const user = findOrCreateUserByEmail("list-route@example.com");
-      const existingCostco = createFolderPath(user.id, ["Errands", "Costco"]);
+      const existingCostco = createFolderPath(user.id, ["Actions", "Errands", "Costco"]);
       const rawToken = "list-route-token";
       createDeviceToken(user.id, "Michael phone", hashRawToken(rawToken));
 
@@ -716,7 +716,7 @@ test("unified capture server MVP", async (suite) => {
     });
   });
 
-  await suite.test("routes issue and meeting note captures into their folder trees", async () => {
+  await suite.test("routes issue and meeting note captures into the correct workspace roots", async () => {
     await withDatabaseAsync(async (databasePath) => {
       initializeDatabase();
       const user = findOrCreateUserByEmail("issue-meeting-route@example.com");
@@ -740,22 +740,27 @@ test("unified capture server MVP", async (suite) => {
       const meetingBody = JSON.parse(meetingResponse.body);
 
       assert.deepEqual(queryRows(databasePath, `
-        SELECT parent.name AS parent_name, child.name AS child_name, items.title, items.body
+        SELECT root.name AS root_name, parent.name AS parent_name, child.name AS child_name, items.kind, items.title, items.body
         FROM items
         JOIN nodes AS child ON child.id = items.node_id
         JOIN nodes AS parent ON parent.id = child.parent_id
+        JOIN nodes AS root ON root.id = parent.parent_id
         WHERE items.id IN ('${issueBody.routed_item_id}', '${meetingBody.routed_item_id}')
-        ORDER BY parent.name;
+        ORDER BY root.name, parent.name;
       `), [
         {
+          root_name: "Actions",
           parent_name: "Issues",
           child_name: "kitchen sink",
+          kind: "todo",
           title: null,
           body: "order a replacement aerator",
         },
         {
+          root_name: "Reference",
           parent_name: "Meetings",
           child_name: "regen hub",
+          kind: "reference",
           title: null,
           body: "ask about the launch checklist",
         },
@@ -763,7 +768,7 @@ test("unified capture server MVP", async (suite) => {
     });
   });
 
-  await suite.test("routes message captures into Messages", async () => {
+  await suite.test("routes message captures into Actions / Messages", async () => {
     await withDatabaseAsync(async (databasePath) => {
       initializeDatabase();
       const user = findOrCreateUserByEmail("message-route@example.com");
@@ -779,12 +784,15 @@ test("unified capture server MVP", async (suite) => {
       const body = JSON.parse(response.body);
 
       assert.deepEqual(queryRows(databasePath, `
-        SELECT nodes.name AS folder_name, items.title, items.body, items.source_capture_id
+        SELECT root.name AS root_name, child.name AS folder_name, items.kind, items.title, items.body, items.source_capture_id
         FROM items
-        JOIN nodes ON nodes.id = items.node_id
+        JOIN nodes AS child ON child.id = items.node_id
+        JOIN nodes AS root ON root.id = child.parent_id
         WHERE items.id = '${body.routed_item_id}';
       `), [{
+        root_name: "Actions",
         folder_name: "Messages",
+        kind: "todo",
         title: null,
         body: "Sam that I am running ten minutes late",
         source_capture_id: body.capture_id,
