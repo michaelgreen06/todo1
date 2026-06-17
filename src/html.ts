@@ -40,14 +40,19 @@ export function renderLoginPage(options: LoginPageOptions): string {
         <p>Enter your email address. For the MVP, the magic link prints in the terminal.</p>
         ${renderNotice(options.message, "success")}
         ${renderNotice(options.error, "error")}
-        <form action="/login" method="post" class="stack">
+        <div id="verify-section">
+          <p>First, confirm you're a real human.</p>
+          <button type="button" id="verify-button">Verify</button>
+        </div>
+        <form id="email-form" action="/login" method="post" class="stack" hidden>
+          <input type="hidden" id="vyt-token" name="vyt">
           <label for="email">Email address</label>
           <input id="email" name="email" type="email" autocomplete="email" required>
           <button type="submit">Send magic link</button>
         </form>
       </section>
     </main>
-  `, "");
+  `, '<script type="module" src="/login.js"></script>');
 }
 
 export function renderTodoPage(options: TodoPageOptions): string {

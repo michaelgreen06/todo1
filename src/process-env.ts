@@ -161,6 +161,17 @@ function requireNonEmptyEnv(name: string): string {
   return value;
 }
 
+export function getVySecretKey(): string {
+  return requireNonEmptyEnv("VY_SECRET_KEY");
+}
+
+export function getVyApiBaseUrl(): string {
+  const configured = env["VY_API_BASE_URL"];
+  return configured !== undefined && configured.trim().length > 0
+    ? configured.trim()
+    : "https://trust.verifyyou.com";
+}
+
 function normalizeTelegramUsername(username: string): string {
   const normalizedUsername = username.replace(/^@+/u, "").trim();
 

@@ -32,6 +32,7 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
+    "@verifyyou-sdk/client": "^0.1.1",
     "@vitejs/plugin-react": "^6.0.2",
     "dotenv": "^17.4.2",
     "fractional-indexing": "^3.2.0",

@@ -6,6 +6,16 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: "../dist/frontend",
+    rollupOptions: {
+      input: {
+        main: "./index.html",
+        login: "./login.ts",
+      },
+      output: {
+        entryFileNames: (chunk) =>
+          chunk.name === "login" ? "login.js" : "assets/[name]-[hash].js",
+      },
+    },
   },
   server: {
     proxy: {

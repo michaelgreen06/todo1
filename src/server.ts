@@ -51,6 +51,8 @@ import {
   getTelegramHermesBotUsername,
   getTelegramHermesChatId,
   getTelegramServerBotToken,
+  getVyApiBaseUrl,
+  getVySecretKey,
   isTelegramHermesEnabled,
 } from "./process-env.js";
 import { triggerPlaudTranscriberRun } from "./railway.js";
@@ -185,6 +187,11 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
 
   if (method === "GET" && url.pathname === "/auth/magic") {
     await handleMagicAuth(request, url, response);
+    return;
+  }
+
+  if (method === "GET" && url.pathname === "/api/vy-confirm") {
+    await handleVyConfirm(url, response);
     return;
   }
 
@@ -825,8 +832,50 @@ async function handleApiDeleteFolder(
   sendWorkspaceViewResponse(response, user, { view: view.view, folderId: nextFolderId, statusIds: view.statusIds });
 }
 
+async function handleVyConfirm(url: URL, response: ServerResponse): Promise<void> {
+  const vytToken = url.searchParams.get("vyt");
+  if (!vytToken) {
+    sendJsonValue(response, 400, { verified: false });
+    return;
+  }
+
+  const confirmRes = await fetch(`${getVyApiBaseUrl()}/v3/confirmations/${vytToken}`, {
+    headers: { Authorization: `Bearer ${getVySecretKey()}` },
+  });
+
+  if (!confirmRes.ok) {
+    sendJsonValue(response, 502, { verified: false });
+    return;
+  }
+
+  const { verified } = await confirmRes.json() as { verified: boolean };
+  sendJsonValue(response, 200, { verified });
+}
+
 async function handleLogin(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const form = new URLSearchParams(await readRequestBody(request));
+
+  const vytToken = form.get("vyt");
+  if (!vytToken) {
+    sendHtml(response, 400, renderLoginPage({ message: null, error: "Human verification required." }));
+    return;
+  }
+
+  const confirmRes = await fetch(`${getVyApiBaseUrl()}/v3/confirmations/${vytToken}`, {
+    headers: { Authorization: `Bearer ${getVySecretKey()}` },
+  });
+
+  if (!confirmRes.ok) {
+    sendHtml(response, 400, renderLoginPage({ message: null, error: "Verification check failed. Please try again." }));
+    return;
+  }
+
+  const { verified } = await confirmRes.json() as { verified: boolean };
+  if (!verified) {
+    sendHtml(response, 400, renderLoginPage({ message: null, error: "Verification failed. Please try again." }));
+    return;
+  }
+
   const emailResult = validateEmail(form.get("email"));
 
   if (!emailResult.ok) {
