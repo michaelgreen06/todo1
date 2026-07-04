@@ -26,7 +26,3 @@ export type ApiWorkspaceResponse = {
 export type ApiTodoResponse = {
   readonly item: Item;
 };
-
-export type ApiPlaudRunResponse = {
-  readonly accepted: boolean;
-};

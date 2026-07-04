@@ -53,7 +53,6 @@ import {
   getTelegramServerBotToken,
   isTelegramHermesEnabled,
 } from "./process-env.js";
-import { triggerPlaudTranscriberRun } from "./railway.js";
 import { dispatchCaptureToTelegramHermes } from "./telegram-hermes.js";
 import { hashRawToken } from "./token.js";
 import {
@@ -452,11 +451,6 @@ async function handleApiRequest(
     return;
   }
 
-  if (method === "POST" && url.pathname === "/api/integrations/plaud/run") {
-    await handleApiPlaudRun(response);
-    return;
-  }
-
   const apiFolderRoute = parseApiResourceRoute(url.pathname, "folders");
 
   if (apiFolderRoute !== null) {
@@ -523,19 +517,6 @@ async function handleApiCreateTodo(request: IncomingMessage, response: ServerRes
   }
 
   sendJsonValue(response, 201, { item: createTodoItem(user.id, todoResult.value.title, todoResult.value.body, folderId) });
-}
-
-async function handleApiPlaudRun(response: ServerResponse): Promise<void> {
-  try {
-    await triggerPlaudTranscriberRun();
-  } catch (error) {
-    sendJsonValue(response, 502, {
-      error: error instanceof Error ? error.message : "Could not trigger PLAUD sync.",
-    });
-    return;
-  }
-
-  sendJsonValue(response, 202, { accepted: true });
 }
 
 async function handleApiUpdateTodo(

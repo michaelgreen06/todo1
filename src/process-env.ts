@@ -75,22 +75,6 @@ export function getPublicBaseUrl(): string | null {
   return normalizeBaseUrl(url);
 }
 
-export function getPlaudRailwayProjectId(): string {
-  return requireNonEmptyEnv("PLAUD_RAILWAY_PROJECT_ID");
-}
-
-export function getPlaudRailwayEnvironmentId(): string {
-  return requireNonEmptyEnv("PLAUD_RAILWAY_ENVIRONMENT_ID");
-}
-
-export function getPlaudRailwayServiceId(): string {
-  return requireNonEmptyEnv("PLAUD_RAILWAY_SERVICE_ID");
-}
-
-export function getPlaudRailwayProjectToken(): string {
-  return requireNonEmptyEnv("PLAUD_RAILWAY_API_TOKEN");
-}
-
 export function isTelegramHermesEnabled(): boolean {
   const configuredValue = env["TELEGRAM_HERMES_ENABLED"];
 

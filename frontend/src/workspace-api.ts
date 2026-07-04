@@ -131,17 +131,6 @@ export async function deleteFolder(folderId: string, input: WorkspaceSelection):
   return validateWorkspaceResponse(response).workspace;
 }
 
-export async function triggerPlaudSync(): Promise<void> {
-  const response = await fetchJson("/api/integrations/plaud/run", {
-    method: "POST",
-    body: JSON.stringify({}),
-  });
-
-  if (!isRecord(response) || response["accepted"] !== true) {
-    throw new Error("Invalid PLAUD sync response.");
-  }
-}
-
 async function fetchJson(path: string, init: RequestInit): Promise<unknown> {
   const response = await fetch(path, {
     ...init,

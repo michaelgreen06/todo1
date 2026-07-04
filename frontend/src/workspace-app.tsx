@@ -12,7 +12,6 @@ import {
   moveTodo,
   renameFolder,
   reorderTodos,
-  triggerPlaudSync,
   updateTodo,
 } from "./workspace-api";
 import {
@@ -98,7 +97,6 @@ export function WorkspaceApp(): ReactElement {
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft>({ title: "", body: "", folderId: "" });
   const [formStatus, setFormStatus] = useState<FormStatus>(emptyFormStatus);
-  const [isTriggeringPlaudSync, setIsTriggeringPlaudSync] = useState(false);
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
   const [dragOrder, setDragOrder] = useState<ReadonlyArray<TodoItem> | null>(null);
   const restoredScrollRef = useRef(false);
@@ -266,22 +264,6 @@ export function WorkspaceApp(): ReactElement {
     const nextWorkspace = await loadWorkspace(selection);
     setWorkspace(nextWorkspace);
     setSelection(getSelectionFromWorkspace(nextWorkspace));
-  }
-
-  async function runPlaudSyncNow(): Promise<void> {
-    setError(null);
-    setIsTriggeringPlaudSync(true);
-
-    try {
-      await triggerPlaudSync();
-    } catch (runError: unknown) {
-      setError(errorMessage(runError, "Could not trigger PLAUD sync."));
-      setIsTriggeringPlaudSync(false);
-      return;
-    }
-
-    setError("PLAUD sync requested. Railway is starting the transcriber now.");
-    setIsTriggeringPlaudSync(false);
   }
 
   function clearTouchLongPress(): void {
@@ -774,14 +756,6 @@ export function WorkspaceApp(): ReactElement {
         </div>
         <div className="todo-actions topbar-actions">
           <a href="/prompts" className="button-link secondary">Prompts</a>
-          <button
-            type="button"
-            className="secondary"
-            disabled={isTriggeringPlaudSync}
-            onClick={() => { void runPlaudSyncNow(); }}
-          >
-            {isTriggeringPlaudSync ? "Starting PLAUD sync..." : "Run PLAUD sync now"}
-          </button>
           <form action="/logout" method="post">
             <button type="submit" className="secondary">Log out</button>
           </form>
