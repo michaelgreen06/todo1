@@ -574,6 +574,8 @@ legend {
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: .85rem;
   cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
 
 .swipe-card-surface[data-has-title="false"] {

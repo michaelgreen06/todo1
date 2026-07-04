@@ -201,14 +201,14 @@ function SwipeCard({ item, itemCount, isBusy, onSwipe }: SwipeCardProps): ReactN
 
       void submitSwipe(getSwipeDirection(movementX, movementY));
     },
-    { filterTaps: true, pointer: { capture: false } },
+    { filterTaps: true, pointer: { capture: false, touch: true } },
   );
 
   return (
     <motion.article
       className="swipe-card"
       data-testid="swipe-card"
-      style={{ x, y, rotate, touchAction: "none" }}
+      style={{ x, y, rotate }}
       aria-label={cardLabel}
     >
       <div

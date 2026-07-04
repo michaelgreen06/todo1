@@ -190,6 +190,72 @@ describe("SwipeApp", () => {
     expect(window.sessionStorage.getItem("todo.swipe.skippedActiveIds")).toBe(JSON.stringify(["todo-1"]));
   });
 
+  it("archives the current card on drag left", async () => {
+    const requests: Array<{ readonly path: string; readonly body: string }> = [];
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      requests.push({ path: input.toString(), body: typeof init?.body === "string" ? init.body : "" });
+
+      if (input.toString() === "/api/todos/todo-1/status") {
+        return jsonResponse({ item: { ...inboxItem, statusId: "archived", statusName: "Archived", statusCategory: "archived" } });
+      }
+
+      return jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem] }) });
+    };
+
+    render(<SwipeApp />);
+
+    dragSurface(await screen.findByTestId("swipe-card-surface"), { x: -90, y: 20 });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("heading", { name: "Call client" })).not.toBeInTheDocument();
+    });
+    expect(requests).toContainEqual({
+      path: "/api/todos/todo-1/status",
+      body: JSON.stringify({ statusId: "archived", note: null }),
+    });
+  });
+
+  it("keeps the current card active on drag right", async () => {
+    const requests: Array<string> = [];
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      requests.push(input.toString());
+      return jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem, secondItem] }) });
+    };
+
+    render(<SwipeApp />);
+
+    dragSurface(await screen.findByTestId("swipe-card-surface"), { x: 120, y: 20 });
+
+    expect(await screen.findByRole("heading", { name: "Draft memo" })).toBeInTheDocument();
+    expect(requests).not.toContain("/api/todos/todo-1/status");
+    expect(window.sessionStorage.getItem("todo.swipe.skippedActiveIds")).toBe(JSON.stringify(["todo-1"]));
+  });
+
+  it("completes the current card on drag up", async () => {
+    const requests: Array<{ readonly path: string; readonly body: string }> = [];
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      requests.push({ path: input.toString(), body: typeof init?.body === "string" ? init.body : "" });
+
+      if (input.toString() === "/api/todos/todo-1/status") {
+        return jsonResponse({ item: { ...inboxItem, statusId: "completed", statusName: "Completed", statusCategory: "completed" } });
+      }
+
+      return jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem] }) });
+    };
+
+    render(<SwipeApp />);
+
+    dragSurface(await screen.findByTestId("swipe-card-surface"), { x: 20, y: -90 });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("heading", { name: "Call client" })).not.toBeInTheDocument();
+    });
+    expect(requests).toContainEqual({
+      path: "/api/todos/todo-1/status",
+      body: JSON.stringify({ statusId: "completed", note: null }),
+    });
+  });
+
   it("hides skipped active cards after refresh and restores them for a new session", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem("todo.swipe.skippedActiveIds", JSON.stringify(["todo-1"]));
@@ -225,6 +291,44 @@ describe("SwipeApp", () => {
     expect(window.sessionStorage.getItem("todo.swipe.skippedActiveIds")).toBeNull();
   });
 });
+
+function dragSurface(surface: HTMLElement, movement: { readonly x: number; readonly y: number }): void {
+  const startTouch = makeTouch(surface, { x: 20, y: 20 });
+  const endTouch = makeTouch(surface, { x: 20 + movement.x, y: 20 + movement.y });
+
+  fireEvent.touchStart(surface, {
+    changedTouches: [startTouch],
+    targetTouches: [startTouch],
+    touches: [startTouch],
+  });
+  fireEvent.touchMove(surface, {
+    changedTouches: [endTouch],
+    targetTouches: [endTouch],
+    touches: [endTouch],
+  });
+  fireEvent.touchEnd(surface, {
+    changedTouches: [endTouch],
+    targetTouches: [],
+    touches: [],
+  });
+}
+
+function makeTouch(target: EventTarget, point: { readonly x: number; readonly y: number }): Touch {
+  return {
+    clientX: point.x,
+    clientY: point.y,
+    force: 1,
+    identifier: 1,
+    pageX: point.x,
+    pageY: point.y,
+    radiusX: 1,
+    radiusY: 1,
+    rotationAngle: 0,
+    screenX: point.x,
+    screenY: point.y,
+    target,
+  };
+}
 
 function makeWorkspace(overrides: {
   readonly todos?: ReadonlyArray<TodoItem>;
