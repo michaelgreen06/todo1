@@ -24,6 +24,7 @@ import {
   storeSelection,
   updateFolderUrl,
 } from "./workspace-storage";
+import { frontendRoutes } from "./frontend-routes";
 import type { DialogState, EditDraft, Folder, Status, TodoItem, WorkspaceSelection, WorkspaceView, WorkspaceViewMode } from "./workspace-types";
 
 type FormStatus = {
@@ -755,7 +756,8 @@ export function WorkspaceApp(): ReactElement {
           <p className="user-email">{workspace.user.email}</p>
         </div>
         <div className="todo-actions topbar-actions">
-          <a href="/prompts" className="button-link secondary">Prompts</a>
+          <a href={frontendRoutes.prompts} className="button-link secondary">Prompts</a>
+          <a href={frontendRoutes.swipe} className="button-link secondary">Swipey</a>
           <form action="/logout" method="post">
             <button type="submit" className="secondary">Log out</button>
           </form>
