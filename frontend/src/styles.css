@@ -571,9 +571,13 @@ legend {
 
 .swipe-card-surface {
   display: grid;
-  grid-template-rows: auto 1fr auto;
-  gap: 1rem;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: .85rem;
   cursor: grab;
+}
+
+.swipe-card-surface[data-has-title="false"] {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .swipe-card-surface:active {
@@ -593,16 +597,17 @@ legend {
 }
 
 .swipe-card h3 {
-  align-self: end;
-  font-size: clamp(1.8rem, 8vw, 4rem);
-  line-height: 1;
+  font-size: clamp(1.35rem, 5vw, 2.6rem);
+  line-height: 1.05;
   overflow-wrap: anywhere;
 }
 
 .swipe-card-body {
-  color: var(--muted);
-  font-size: 1.05rem;
-  line-height: 1.55;
+  min-height: 0;
+  color: var(--ink);
+  font-size: clamp(1.55rem, 5vw, 2.8rem);
+  line-height: 1.18;
+  overflow: auto;
   overflow-wrap: anywhere;
 }
 

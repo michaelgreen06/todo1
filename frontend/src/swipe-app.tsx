@@ -152,6 +152,8 @@ type SwipeCardProps = {
 };
 
 function SwipeCard({ item, itemCount, isBusy, onSwipe }: SwipeCardProps): ReactNode {
+  const visibleTitle = displayTitle(item.title);
+  const cardLabel = visibleTitle ?? item.body;
   const prefersReducedMotion = useReducedMotion();
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -207,9 +209,14 @@ function SwipeCard({ item, itemCount, isBusy, onSwipe }: SwipeCardProps): ReactN
       className="swipe-card"
       data-testid="swipe-card"
       style={{ x, y, rotate, touchAction: "none" }}
-      aria-labelledby={`${item.id}-swipe-title`}
+      aria-label={cardLabel}
     >
-      <div {...bind()} className="swipe-card-surface" data-testid="swipe-card-surface">
+      <div
+        {...bind()}
+        className="swipe-card-surface"
+        data-has-title={visibleTitle === null ? "false" : "true"}
+        data-testid="swipe-card-surface"
+      >
         <motion.p className="swipe-indicator swipe-indicator-left" style={{ opacity: archiveOpacity }}>Archive</motion.p>
         <motion.p className="swipe-indicator swipe-indicator-right" style={{ opacity: keepOpacity }}>Keep active</motion.p>
         <motion.p className="swipe-indicator swipe-indicator-up" style={{ opacity: completeOpacity }}>Complete</motion.p>
@@ -218,7 +225,7 @@ function SwipeCard({ item, itemCount, isBusy, onSwipe }: SwipeCardProps): ReactN
           <p className="eyebrow">Card {itemCount.toString()}</p>
           <p className="status-pill">{item.statusName}</p>
         </header>
-        <h3 id={`${item.id}-swipe-title`}>{item.title ?? "Untitled task"}</h3>
+        {visibleTitle === null ? null : <h3>{visibleTitle}</h3>}
         <p className="swipe-card-body">{item.body}</p>
       </div>
       <footer className="swipe-controls" aria-label="Swipe actions">
@@ -234,6 +241,16 @@ function SwipeCard({ item, itemCount, isBusy, onSwipe }: SwipeCardProps): ReactN
       </footer>
     </motion.article>
   );
+}
+
+function displayTitle(title: string | null): string | null {
+  const trimmedTitle = title?.trim() ?? "";
+
+  if (trimmedTitle === "" || trimmedTitle.toLowerCase() === "untitled note" || trimmedTitle.toLowerCase() === "untitled task") {
+    return null;
+  }
+
+  return trimmedTitle;
 }
 
 function getSwipeDirection(movementX: number, movementY: number): SwipeDirection {

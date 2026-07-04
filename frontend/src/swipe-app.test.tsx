@@ -106,6 +106,21 @@ describe("SwipeApp", () => {
     });
   });
 
+  it("does not display placeholder titles for untitled notes", async () => {
+    const untitledItem = {
+      ...inboxItem,
+      title: "Untitled note",
+      body: "Use the whole card for this captured note.",
+    };
+    globalThis.fetch = async (): Promise<Response> => jsonResponse({ workspace: makeWorkspace({ todos: [untitledItem] }) });
+
+    render(<SwipeApp />);
+
+    expect(await screen.findByText("Use the whole card for this captured note.")).toBeInTheDocument();
+    expect(screen.queryByText("Untitled note")).not.toBeInTheDocument();
+    expect(screen.queryByText("Untitled task")).not.toBeInTheDocument();
+  });
+
   it("archives the current card without a note on left action", async () => {
     const requests: Array<{ readonly path: string; readonly body: string }> = [];
     const user = userEvent.setup();
