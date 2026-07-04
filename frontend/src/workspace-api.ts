@@ -58,7 +58,7 @@ export async function updateTodo(itemId: string, input: {
 
 export async function changeStatus(itemId: string, input: {
   readonly statusId: string;
-  readonly note: string;
+  readonly note: string | null;
 }): Promise<TodoItem> {
   const response = await fetchJson(`/api/todos/${encodeURIComponent(itemId)}/status`, {
     method: "POST",

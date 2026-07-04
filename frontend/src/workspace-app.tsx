@@ -16,8 +16,11 @@ import {
   updateTodo,
 } from "./workspace-api";
 import {
+  clearStoredEditDraft,
+  readStoredEditDraft,
   readStoredScrollY,
   readStoredSelection,
+  storeEditDraft,
   storeScrollY,
   storeSelection,
   updateFolderUrl,
@@ -40,6 +43,7 @@ type PendingTouchDrag = {
 const emptyFormStatus: FormStatus = { error: null, isSaving: false };
 const touchDragDelayMs = 350;
 const touchDragMoveTolerancePx = 8;
+const unsavedChangesMessage = "Unsaved changes will be lost if you leave this page.";
 
 function todoIdsEqual(left: ReadonlyArray<TodoItem>, right: ReadonlyArray<TodoItem>): boolean {
   return left.length === right.length && left.every((item, index) => item.id === right[index]?.id);
@@ -108,6 +112,8 @@ export function WorkspaceApp(): ReactElement {
   const dragCurrentOrderRef = useRef<ReadonlyArray<TodoItem>>([]);
   const touchLongPressTimerRef = useRef<number | null>(null);
   const pendingTouchDragRef = useRef<PendingTouchDrag | null>(null);
+  const editingItem = useMemo(() => workspace?.todos.find((item) => item.id === editingItemId) ?? null, [editingItemId, workspace]);
+  const hasUnsavedEditChanges = editingItem !== null && isEditDraftDirty(editingItem, editDraft);
 
   useEffect(() => {
     let isCurrent = true;
@@ -172,6 +178,37 @@ export function WorkspaceApp(): ReactElement {
       window.removeEventListener("pagehide", saveScroll);
     };
   }, []);
+
+  useEffect(() => {
+    if (editingItemId === null) {
+      return;
+    }
+
+    storeEditDraft({
+      itemId: editingItemId,
+      title: editDraft.title,
+      body: editDraft.body,
+      folderId: editDraft.folderId,
+    });
+  }, [editDraft, editingItemId]);
+
+  useEffect(() => {
+    if (!hasUnsavedEditChanges) {
+      return;
+    }
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent): string => {
+      event.preventDefault();
+      event.returnValue = unsavedChangesMessage;
+      return unsavedChangesMessage;
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [hasUnsavedEditChanges]);
 
   useEffect(() => {
     if (workspace === null || restoredScrollRef.current) {
@@ -407,9 +444,18 @@ export function WorkspaceApp(): ReactElement {
     beginPointerDrag(item, event.pointerId, event.currentTarget);
   }
 
-  function changeFolder(folderId: string | null): void {
-    setSelectedItemIds([]);
+  function stopEditing(): void {
     setEditingItemId(null);
+    clearStoredEditDraft();
+  }
+
+  function changeFolder(folderId: string | null): void {
+    if (!confirmDiscardUnsavedChanges(hasUnsavedEditChanges)) {
+      return;
+    }
+
+    setSelectedItemIds([]);
+    stopEditing();
     setFormStatus(emptyFormStatus);
     setSelection({ ...selection, folderId });
   }
@@ -419,8 +465,12 @@ export function WorkspaceApp(): ReactElement {
       return;
     }
 
+    if (!confirmDiscardUnsavedChanges(hasUnsavedEditChanges)) {
+      return;
+    }
+
     setSelectedItemIds([]);
-    setEditingItemId(null);
+    stopEditing();
     setFormStatus(emptyFormStatus);
     setSelection({
       view,
@@ -439,6 +489,11 @@ export function WorkspaceApp(): ReactElement {
   }
 
   function openCreateDialog(): void {
+    if (!confirmDiscardUnsavedChanges(hasUnsavedEditChanges)) {
+      return;
+    }
+
+    stopEditing();
     setFormStatus(emptyFormStatus);
     setDialog({ type: "create" });
   }
@@ -454,11 +509,16 @@ export function WorkspaceApp(): ReactElement {
   }
 
   function startEditing(item: TodoItem): void {
+    if (editingItemId !== null && editingItemId !== item.id && !confirmDiscardUnsavedChanges(hasUnsavedEditChanges)) {
+      return;
+    }
+
+    const storedDraft = readStoredEditDraft();
     setEditingItemId(item.id);
     setEditDraft({
-      title: item.title ?? "",
-      body: item.body,
-      folderId: item.nodeId ?? "",
+      title: storedDraft?.itemId === item.id ? storedDraft.title : (item.title ?? ""),
+      body: storedDraft?.itemId === item.id ? storedDraft.body : item.body,
+      folderId: storedDraft?.itemId === item.id ? storedDraft.folderId : (item.nodeId ?? ""),
     });
     setFormStatus(emptyFormStatus);
   }
@@ -476,7 +536,13 @@ export function WorkspaceApp(): ReactElement {
         ...current,
         todos: current.todos.map((candidate) => candidate.id === updated.id ? updated : candidate),
       });
-      setEditingItemId(null);
+      setEditDraft({
+        title: updated.title ?? "",
+        body: updated.body,
+        folderId: updated.nodeId ?? "",
+      });
+      clearStoredEditDraft();
+      setFormStatus(emptyFormStatus);
 
       if (updated.nodeId !== item.nodeId) {
         await refreshCurrentWorkspace();
@@ -853,7 +919,14 @@ export function WorkspaceApp(): ReactElement {
                     }}
                     onEdit={startEditing}
                     onDraftChange={setEditDraft}
-                    onCancelEdit={() => { setEditingItemId(null); setFormStatus(emptyFormStatus); }}
+                    onCancelEdit={() => {
+                      if (!confirmDiscardUnsavedChanges(hasUnsavedEditChanges)) {
+                        return;
+                      }
+
+                      stopEditing();
+                      setFormStatus(emptyFormStatus);
+                    }}
                     onSaveEdit={(todo) => { void saveEdit(todo); }}
                     onStatus={(todo) => { setDialog({ type: "status", item: todo }); setFormStatus(emptyFormStatus); }}
                     onMove={(todo) => { setDialog({ type: "move", item: todo }); setFormStatus(emptyFormStatus); }}
@@ -1538,6 +1611,16 @@ function getFolderViewForMove(
   }
 
   return null;
+}
+
+function isEditDraftDirty(item: TodoItem, draft: EditDraft): boolean {
+  return draft.title !== (item.title ?? "")
+    || draft.body !== item.body
+    || draft.folderId !== (item.nodeId ?? "");
+}
+
+function confirmDiscardUnsavedChanges(hasUnsavedChanges: boolean): boolean {
+  return !hasUnsavedChanges || window.confirm(unsavedChangesMessage);
 }
 
 function errorMessage(error: unknown, fallback: string): string {
