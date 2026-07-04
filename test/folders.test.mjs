@@ -19,6 +19,7 @@ import {
   listFolders,
   listStatuses,
   listTodoItems,
+  markUserVerified,
   moveTodoItemToLocation,
   renameFolder,
   reorderVisibleTodoItem,
@@ -428,6 +429,22 @@ COMMIT;`,
     });
   });
 
+  await suite.test("serves swipe shell only for authenticated users", async () => {
+    await withDatabaseAsync(async () => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("swipe-route@example.com");
+      const cookie = createSessionCookie(user.id);
+
+      const unauthenticated = await sendRequest({ method: "GET", url: "/swipe" });
+      assert.equal(unauthenticated.statusCode, 303);
+      assert.equal(unauthenticated.headers.Location, "/login");
+
+      const response = await sendRequest({ method: "GET", url: "/swipe", headers: { cookie } });
+      assert.equal(response.statusCode, 200);
+      assert.match(response.body, /<div id="root"><\/div>/u);
+    });
+  });
+
   await suite.test("serves authenticated JSON workspace APIs", async () => {
     await withDatabaseAsync(async () => {
       initializeDatabase();
@@ -685,6 +702,7 @@ function createSessionCookie(userId) {
   const rawSessionToken = `session-${userId}`;
   const now = new Date().toISOString();
   const expires = new Date(Date.now() + 60_000).toISOString();
+  markUserVerified(userId);
   createLoginToken(userId, hashRawToken(rawLoginToken), expires);
   const session = consumeLoginTokenAndCreateSession(hashRawToken(rawLoginToken), hashRawToken(rawSessionToken), expires, now);
   assert.notEqual(session, null);

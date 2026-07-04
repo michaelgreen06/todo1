@@ -429,7 +429,9 @@ describe("WorkspaceApp", () => {
     await user.click(screen.getByRole("button", { name: "Edit" }));
     await user.clear(screen.getByLabelText(/Title/u));
     await user.type(screen.getByLabelText(/Title/u), "Temporary");
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(confirmSpy).toHaveBeenCalled();
     expect(screen.queryByDisplayValue("Temporary")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Edit" }));
@@ -439,8 +441,49 @@ describe("WorkspaceApp", () => {
     await user.type(screen.getByLabelText("Description"), "Edited body");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
 
-    expect(await screen.findByText("Edited title")).toBeInTheDocument();
+    expect(await screen.findByDisplayValue("Edited title")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Edited body")).toBeInTheDocument();
     expect(requests).toContain("PATCH /api/todos/todo-1");
+  });
+
+  it("restores autosaved inline edit drafts after remounting the page", async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = async (): Promise<Response> => jsonResponse({ workspace: makeWorkspace() });
+
+    const { unmount } = render(<WorkspaceApp />);
+
+    expect(await screen.findByText("Call client")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.clear(screen.getByLabelText(/Title/u));
+    await user.type(screen.getByLabelText(/Title/u), "Recovered title");
+    await user.clear(screen.getByLabelText("Description"));
+    await user.type(screen.getByLabelText("Description"), "Recovered body");
+
+    unmount();
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByText("Call client")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByDisplayValue("Recovered title")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Recovered body")).toBeInTheDocument();
+  });
+
+  it("warns before changing folders with unsaved inline edits", async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = async (): Promise<Response> => jsonResponse({ workspace: makeWorkspace() });
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByText("Call client")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.type(screen.getByLabelText(/Title/u), " changed");
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await user.click(screen.getByRole("button", { name: /Inbox/u }));
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/actions/folders/folder-1");
+    expect(screen.getByDisplayValue("Call client changed")).toBeInTheDocument();
   });
 
   it("saves status through API without resetting the selected view", async () => {

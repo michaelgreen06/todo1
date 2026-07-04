@@ -4,6 +4,14 @@ const VIEW_KEY = "todo.workspace.view";
 const FOLDER_KEY = "todo.workspace.folderId";
 const STATUS_KEY = "todo.workspace.statusIds";
 const SCROLL_KEY = "todo.workspace.scrollY";
+const EDIT_DRAFT_KEY = "todo.workspace.editDraft";
+
+type StoredEditDraft = {
+  readonly itemId: string;
+  readonly title: string;
+  readonly body: string;
+  readonly folderId: string;
+};
 
 export function readStoredSelection(): WorkspaceSelection {
   const routeSelection = getUrlSelection();
@@ -34,6 +42,34 @@ export function readStoredScrollY(): number {
 
 export function storeScrollY(scrollY: number): void {
   window.sessionStorage.setItem(SCROLL_KEY, Math.max(0, Math.round(scrollY)).toString());
+}
+
+export function readStoredEditDraft(): StoredEditDraft | null {
+  const value = window.sessionStorage.getItem(EDIT_DRAFT_KEY);
+
+  if (value === null) {
+    return null;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(value);
+
+    if (!isStoredEditDraft(parsed)) {
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function storeEditDraft(draft: StoredEditDraft): void {
+  window.sessionStorage.setItem(EDIT_DRAFT_KEY, JSON.stringify(draft));
+}
+
+export function clearStoredEditDraft(): void {
+  window.sessionStorage.removeItem(EDIT_DRAFT_KEY);
 }
 
 export function updateFolderUrl(selection: WorkspaceSelection): void {
@@ -143,4 +179,17 @@ function getStoredStringArray(key: string): Array<string> {
   } catch {
     return [];
   }
+}
+
+function isStoredEditDraft(value: unknown): value is StoredEditDraft {
+  return typeof value === "object"
+    && value !== null
+    && "itemId" in value
+    && "title" in value
+    && "body" in value
+    && "folderId" in value
+    && typeof value.itemId === "string"
+    && typeof value.title === "string"
+    && typeof value.body === "string"
+    && typeof value.folderId === "string";
 }

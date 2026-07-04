@@ -224,6 +224,15 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
     return;
   }
 
+  if (method === "GET" && url.pathname === "/swipe") {
+    if (await serveWorkspaceShell(response)) {
+      return;
+    }
+
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
   const viewRoute = parseWorkspaceViewRoute(url.pathname, user.id);
 
   if (method === "GET" && viewRoute !== null) {
