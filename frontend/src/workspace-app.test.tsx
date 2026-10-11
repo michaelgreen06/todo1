@@ -487,13 +487,14 @@ describe("WorkspaceApp", () => {
     expect(screen.getByDisplayValue("Call client changed")).toBeInTheDocument();
   });
 
-  it("saves status through API without resetting the selected view", async () => {
+  it("saves status through API without note and without resetting the selected view", async () => {
     const user = userEvent.setup();
-    const requests: Array<string> = [];
+    const requests: Array<{ readonly path: string; readonly body: string }> = [];
     globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      requests.push(`${init?.method ?? "GET"} ${input.toString()}`);
+      const path = input.toString();
+      requests.push({ path, body: typeof init?.body === "string" ? init.body : "" });
 
-      if (input.toString() === "/api/todos/todo-1/status") {
+      if (path === "/api/todos/todo-1/status") {
         return jsonResponse({ item: { ...inboxItem, statusId: "completed", statusName: "Completed", statusCategory: "completed" } });
       }
 
@@ -504,15 +505,19 @@ describe("WorkspaceApp", () => {
 
     expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Status" }));
+    expect(screen.queryByLabelText("Note")).not.toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("Status"), "completed");
     await user.click(screen.getByRole("button", { name: "Save status" }));
 
     expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
-    expect(requests).toContain("POST /api/todos/todo-1/status");
-    expect(requests).toContain("POST /api/workspace/view");
+    expect(requests).toContainEqual({
+      path: "/api/todos/todo-1/status",
+      body: JSON.stringify({ statusId: "completed", note: null }),
+    });
+    expect(requests.some((r) => r.path === "/api/workspace/view")).toBe(true);
   });
 
-  it("changes selected item statuses with a separate note for each item", async () => {
+  it("changes selected item statuses without notes in a single action", async () => {
     const user = userEvent.setup();
     const requests: Array<{ readonly path: string; readonly body: string }> = [];
     globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -531,29 +536,96 @@ describe("WorkspaceApp", () => {
     expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
     await user.click(screen.getByLabelText("Select all"));
     await user.click(screen.getByRole("button", { name: "Change status" }));
-    expect(screen.getByRole("heading", { name: "Change selected statuses" })).toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("Status"), "completed");
-    await user.click(screen.getByRole("button", { name: "Continue to notes" }));
-
-    expect(screen.getByRole("heading", { name: "Note for item 1 of 2" })).toBeInTheDocument();
-    await user.type(screen.getByLabelText(/Note/u), "First note");
-    await user.click(screen.getByRole("button", { name: "Save and continue" }));
-
-    expect(await screen.findByRole("heading", { name: "Note for item 2 of 2" })).toBeInTheDocument();
-    await user.type(screen.getByLabelText(/Note/u), "Second note");
-    await user.click(screen.getByRole("button", { name: "Save statuses" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "Change selected statuses" })).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("Note")).not.toBeInTheDocument();
+    await user.selectOptions(within(dialog).getByLabelText("Status"), "completed");
+    await user.click(within(dialog).getByRole("button", { name: "Change status" }));
 
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
     expect(requests).toContainEqual({
       path: "/api/todos/todo-1/status",
-      body: JSON.stringify({ statusId: "completed", note: "First note" }),
+      body: JSON.stringify({ statusId: "completed", note: null }),
     });
     expect(requests).toContainEqual({
       path: "/api/todos/todo-2/status",
-      body: JSON.stringify({ statusId: "completed", note: "Second note" }),
+      body: JSON.stringify({ statusId: "completed", note: null }),
     });
+  });
+
+  it("retries bulk status after partial failure without resending changed items", async () => {
+    const user = userEvent.setup();
+    const requests: Array<{ readonly path: string; readonly body: string }> = [];
+    let attemptCount = 0;
+    const thirdItem: TodoItem = { ...inboxItem, id: "todo-3", title: "Third item", todoRank: "a2" };
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const path = input.toString();
+      requests.push({ path, body: typeof init?.body === "string" ? init.body : "" });
+
+      if (path === "/api/todos/todo-1/status") {
+        return jsonResponse({ item: { ...inboxItem, statusId: "completed", statusName: "Completed", statusCategory: "completed" } });
+      }
+
+      if (path === "/api/todos/todo-2/status") {
+        return jsonResponse({ item: { ...secondItem, statusId: "completed", statusName: "Completed", statusCategory: "completed" } });
+      }
+
+      if (path === "/api/todos/todo-3/status") {
+        attemptCount += 1;
+        if (attemptCount === 1) {
+          return jsonResponse({ error: "Status change failed" }, 500);
+        }
+        return jsonResponse({ item: { ...thirdItem, statusId: "completed", statusName: "Completed", statusCategory: "completed" } });
+      }
+
+      if (path === "/api/workspace/view") {
+        const completedItem1: TodoItem = { ...inboxItem, statusId: "completed", statusName: "Completed", statusCategory: "completed" };
+        const completedItem2: TodoItem = { ...secondItem, statusId: "completed", statusName: "Completed", statusCategory: "completed" };
+        const todos = requests.filter((r) => r.path === "/api/todos/todo-1/status").length > 0
+          ? [completedItem1, completedItem2, thirdItem]
+          : [inboxItem, secondItem, thirdItem];
+        return jsonResponse({ workspace: makeWorkspace({ todos }) });
+      }
+
+      return jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem, secondItem, thirdItem] }) });
+    };
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
+    await user.click(screen.getByLabelText("Select all"));
+    await user.click(screen.getByRole("button", { name: "Change status" }));
+    const dialog = screen.getByRole("dialog");
+    await user.selectOptions(within(dialog).getByLabelText("Status"), "completed");
+    await user.click(within(dialog).getByRole("button", { name: "Change status" }));
+
+    expect(await screen.findByText(/2 of 3 items updated/)).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    const statusRequests = requests.filter((r) => r.path.endsWith("/status"));
+    expect(statusRequests).toHaveLength(3);
+    expect(statusRequests.map((r) => r.path)).toEqual([
+      "/api/todos/todo-1/status",
+      "/api/todos/todo-2/status",
+      "/api/todos/todo-3/status",
+    ]);
+
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Change status" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    const allStatusRequests = requests.filter((r) => r.path.endsWith("/status"));
+    expect(allStatusRequests).toHaveLength(4);
+    expect(allStatusRequests[3]).toEqual({
+      path: "/api/todos/todo-3/status",
+      body: JSON.stringify({ statusId: "completed", note: null }),
+    });
+    expect(allStatusRequests.filter((r) => r.path === "/api/todos/todo-1/status")).toHaveLength(1);
+    expect(allStatusRequests.filter((r) => r.path === "/api/todos/todo-2/status")).toHaveLength(1);
   });
 
   it("renders drag handles as buttons", async () => {

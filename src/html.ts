@@ -383,8 +383,6 @@ function renderStatusDialog(statuses: ReadonlyArray<Status>, returnTo: string): 
           ${renderHidden("returnTo", returnTo)}
           <label for="statusId">Status</label>
           <select id="statusId" name="statusId" required>${statuses.map((status) => `<option value="${escapeAttribute(status.id)}">${escapeHtml(status.name)}</option>`).join("")}</select>
-          <label for="note">Note <span class="muted">(optional)</span></label>
-          <textarea id="note" name="note" rows="4" maxlength="2000"></textarea>
           <div class="button-row"><button type="submit">Save status</button><button type="button" class="secondary" data-close-status-dialog>Cancel</button></div>
         </form>
       </section>
