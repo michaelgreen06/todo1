@@ -1177,7 +1177,7 @@ function FolderSettings(props: {
           <button type="submit" className="secondary" disabled={props.isSaving}>Rename</button>
         </form>
         <div className="stack">
-          <p className="muted">Only empty folders without child folders can be deleted.</p>
+          <p className="muted">Deleting moves non-Deferred items to the parent folder. Move Deferred items and delete child folders first.</p>
           <button type="button" className="danger" disabled={props.isSaving} onClick={() => { void props.onDelete(props.folder); }}>
             Delete folder
           </button>

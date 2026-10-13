@@ -746,6 +746,59 @@ export function deleteEmptyLeafFolder(folderId: string, userId: string): "delete
   return "deleted";
 }
 
+export function deleteFolderMovingNonDeferredItems(folderId: string, userId: string): "deleted" | "not-found" | "not-empty" {
+  const folder = findFolderForUser(folderId, userId);
+
+  if (folder === null) {
+    return "not-found";
+  }
+
+  const row = firstRow(queryRows(`
+    SELECT
+      EXISTS(SELECT 1 FROM items JOIN statuses ON statuses.id = items.status_id
+        WHERE items.node_id = ${sql(folder.id)} AND items.user_id = ${sql(userId)}
+          AND statuses.category = ${sql(STATUS_CATEGORIES.deferred)}) AS has_deferred,
+      EXISTS(SELECT 1 FROM nodes WHERE parent_id = ${sql(folder.id)} AND user_id = ${sql(userId)}) AS has_children;
+  `));
+  if (row === null || getRequiredBoolean(row, "has_deferred") || getRequiredBoolean(row, "has_children")) {
+    return "not-empty";
+  }
+
+  const items = queryRows(`
+    SELECT id FROM items WHERE node_id = ${sql(folder.id)} AND user_id = ${sql(userId)}
+    ORDER BY todo_rank ASC, created_at ASC, id ASC;
+  `);
+  const timestamp = nowIso();
+  const kind = getItemKindForLocation(userId, folder.parentId);
+  let topRank = generateTopTodoRank(userId, folder.parentId);
+  const moves = items.map((item) => {
+    const itemId = getRequiredString(item, "id");
+    const rank = topRank;
+    topRank = generateKeyBetween(null, topRank);
+    return `UPDATE items SET node_id = ${sql(folder.parentId)}, kind = ${folder.parentId === null ? "kind" : sql(kind)},
+      todo_rank = ${sql(rank)}, todo_rank_changed_at = ${sql(timestamp)}, updated_at = ${sql(timestamp)}
+      WHERE id = ${sql(itemId)} AND user_id = ${sql(userId)} AND node_id = ${sql(folder.id)};`;
+  });
+
+  executeSql(`
+    BEGIN IMMEDIATE;
+    CREATE TEMP TABLE folder_delete_guard (valid INTEGER NOT NULL CHECK(valid = 1));
+    INSERT INTO folder_delete_guard (valid)
+    SELECT CASE WHEN
+      EXISTS(SELECT 1 FROM nodes WHERE parent_id = ${sql(folder.id)})
+      OR EXISTS(SELECT 1 FROM items JOIN statuses ON statuses.id = items.status_id
+        WHERE items.node_id = ${sql(folder.id)} AND statuses.category = ${sql(STATUS_CATEGORIES.deferred)})
+      OR (SELECT COUNT(*) FROM items WHERE node_id = ${sql(folder.id)}) != ${sql(items.length)}
+      THEN 0 ELSE 1 END;
+    ${moves.join("\n")}
+    DELETE FROM nodes WHERE id = ${sql(folder.id)} AND user_id = ${sql(userId)}
+      AND NOT EXISTS(SELECT 1 FROM nodes WHERE parent_id = ${sql(folder.id)})
+      AND NOT EXISTS(SELECT 1 FROM items WHERE node_id = ${sql(folder.id)});
+    COMMIT;
+  `, true);
+  return findFolderForUser(folder.id, userId) === null ? "deleted" : "not-empty";
+}
+
 export function findItemForUser(itemId: string, userId: string): Item | null {
   const row = firstRow(queryRows(`
     ${itemSelect()}
@@ -1230,12 +1283,12 @@ function sqlList(values: ReadonlyArray<string>): string {
   return values.map((value) => sql(value)).join(", ");
 }
 
-function executeSql(statement: string): void {
+function executeSql(statement: string, bail = false): void {
   const options: SqliteExecOptions = {
     encoding: "utf8",
     input: `PRAGMA foreign_keys = ON;\n${statement}`,
   };
-  execFileSync(SQLITE_BIN, [getTodoDatabasePath()], options);
+  execFileSync(SQLITE_BIN, bail ? ["-bail", getTodoDatabasePath()] : [getTodoDatabasePath()], options);
 }
 
 function queryRows(statement: string): Array<UnknownRecord> {

@@ -283,7 +283,7 @@ function renderFolderControls(options: TodoPageOptions): string {
         </form>
         <form action="/folders/${encodeURIComponent(folder.id)}/delete" method="post" class="stack">
           ${renderHidden("returnTo", options.returnTo)}
-          <p class="muted">Only empty folders without child folders can be deleted.</p>
+          <p class="muted">Deleting moves non-Deferred items to the parent folder. Move Deferred items and delete child folders first.</p>
           <button type="submit" class="danger">Delete folder</button>
         </form>
       </div>

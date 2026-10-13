@@ -15,7 +15,7 @@ import {
   countInboxItems,
   createFolderPath,
   createTodoItem,
-  deleteEmptyLeafFolder,
+  deleteFolderMovingNonDeferredItems,
   getWorkspaceRoots,
   getWorkspaceViewForFolder,
   findActiveDeviceToken,
@@ -798,10 +798,10 @@ async function handleApiDeleteFolder(
     return;
   }
 
-  const result = deleteEmptyLeafFolder(folder.id, user.id);
+  const result = deleteFolderMovingNonDeferredItems(folder.id, user.id);
 
   if (result === "not-empty") {
-    sendApiValidationError(response, "Delete items and child folders before deleting this folder.");
+    sendApiValidationError(response, "Move Deferred items and delete child folders before deleting this folder.");
     return;
   }
 
@@ -924,10 +924,10 @@ async function handleDeleteFolder(request: IncomingMessage, response: ServerResp
     return;
   }
 
-  const result = deleteEmptyLeafFolder(folder.id, user.id);
+  const result = deleteFolderMovingNonDeferredItems(folder.id, user.id);
 
   if (result === "not-empty") {
-    sendTodoPageForReturnTo(response, user, returnTo, "Delete items and child folders before deleting this folder.");
+    sendTodoPageForReturnTo(response, user, returnTo, "Move Deferred items and delete child folders before deleting this folder.");
     return;
   }
 
