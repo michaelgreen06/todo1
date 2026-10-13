@@ -91,6 +91,31 @@ export function renderTodoPage(options: TodoPageOptions): string {
   `, renderClientScript(options));
 }
 
+export type DeleteConfirmPageOptions = {
+  readonly todo: Item;
+  readonly returnTo: string;
+};
+
+export function renderDeleteConfirmPage(options: DeleteConfirmPageOptions): string {
+  return renderLayout("Delete item", `
+    <main class="auth-shell">
+      <section class="panel panel-edit" aria-labelledby="delete-heading">
+        <p class="eyebrow">Delete item</p>
+        <h1 id="delete-heading">Delete this item?</h1>
+        <p>${escapeHtml(options.todo.title ?? options.todo.body)}</p>
+        <p class="muted">This permanently deletes the item and its status history. This cannot be undone. Original capture records, if any, remain stored.</p>
+        <form action="/todos/${encodeURIComponent(options.todo.id)}/delete" method="post" class="stack">
+          ${renderHidden("returnTo", options.returnTo)}
+          <div class="button-row">
+            <button type="submit" class="danger">Delete permanently</button>
+            <a href="${escapeAttribute(options.returnTo)}" class="button-link secondary">Cancel</a>
+          </div>
+        </form>
+      </section>
+    </main>
+  `, "");
+}
+
 export function renderEditPage(options: EditPageOptions): string {
   return renderLayout("Edit todo", `
     <main class="auth-shell">
@@ -337,6 +362,7 @@ function renderTodoCard(todo: Item, index: number, options: TodoPageOptions): st
         </div>
         <div class="todo-actions">
           <a href="/todos/${encodeURIComponent(todo.id)}/edit?returnTo=${encodeURIComponent(options.returnTo)}">Edit</a>
+          <a href="/todos/${encodeURIComponent(todo.id)}/delete?returnTo=${encodeURIComponent(options.returnTo)}" class="button-link danger">Delete</a>
           <button type="button" class="secondary" data-open-status-dialog data-item-id="${escapeAttribute(todo.id)}" data-item-label="${escapeAttribute(primaryText)}">Status</button>
           <button type="button" class="secondary" data-open-move-dialog data-item-id="${escapeAttribute(todo.id)}" data-item-label="${escapeAttribute(primaryText)}" data-folder-id="${escapeAttribute(todo.nodeId ?? "")}">Move</button>
           <form action="/todos/${encodeURIComponent(todo.id)}/move-up" method="post">

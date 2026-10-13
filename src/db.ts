@@ -814,6 +814,24 @@ export function updateTodoItem(itemId: string, userId: string, title: string | n
   return findItemForUser(itemId, userId) !== null;
 }
 
+export function deleteTodoItemsForUser(userId: string, itemIds: ReadonlyArray<string>): "deleted" | "not-found" {
+  const uniqueItemIds = [...new Set(itemIds)];
+  if (uniqueItemIds.length === 0 || uniqueItemIds.length > 1_000) {
+    return "not-found";
+  }
+
+  const row = firstRow(queryRows(`
+    BEGIN IMMEDIATE;
+    DELETE FROM items
+    WHERE user_id = ${sql(userId)} AND id IN (${sqlList(uniqueItemIds)})
+      AND (SELECT COUNT(*) FROM items WHERE user_id = ${sql(userId)}
+        AND id IN (${sqlList(uniqueItemIds)})) = ${sql(uniqueItemIds.length)};
+    SELECT changes() AS deleted_count;
+    COMMIT;
+  `));
+  return row !== null && getRequiredNumber(row, "deleted_count") === uniqueItemIds.length ? "deleted" : "not-found";
+}
+
 export function changeItemStatus(itemId: string, userId: string, statusId: string, note: string | null): boolean {
   const item = findItemForUser(itemId, userId);
   const status = findStatusForUser(statusId, userId);
