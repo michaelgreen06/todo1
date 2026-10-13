@@ -1,6 +1,7 @@
 import {
   consumeLoginTokenAndCreateSession,
   createLoginToken,
+  createSession,
   findActiveSession,
   findOrCreateUserByEmail,
   findUserById,
@@ -10,7 +11,8 @@ import { createRawToken, hashRawToken } from "./token.js";
 import type { User } from "./db.js";
 
 const MAGIC_LINK_TTL_MS = 30 * 60 * 1000;
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// Applies to sessions created after this change. Existing sessions keep their stored expiry.
+const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
 export type MagicLinkResult = {
   readonly loginUrl: string;
@@ -68,6 +70,12 @@ export function consumeMagicToken(
     sessionToken,
     user,
   });
+}
+
+export function createSessionTokenForUser(userId: string): string {
+  const sessionToken = createRawToken();
+  createSession(userId, hashRawToken(sessionToken), futureIso(SESSION_TTL_MS), new Date().toISOString());
+  return sessionToken;
 }
 
 export function getUserForSessionToken(

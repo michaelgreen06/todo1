@@ -11,7 +11,7 @@ declare module "node:crypto" {
     algorithm: "sha256",
   ): {
     update(data: string, inputEncoding?: "utf8"): {
-      digest(encoding: "hex"): string;
+      digest(encoding: "hex" | "base64url"): string;
     };
   };
 

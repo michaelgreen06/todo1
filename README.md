@@ -200,6 +200,13 @@ railway ssh node dist/create-device-token.js user@example.com "Michael phone"
 
 Copy the raw token immediately. Same story as local: only the hash is stored.
 
+### Sign-in options
+
+Email magic-link login uses the Railway logs, as described below. Optional GitHub OAuth
+sign-in for existing Todo accounts avoids log retrieval and requires no app email service;
+see [GitHub sign-in setup](docs/github-sign-in.md). New sessions last 90 days.
+GitHub sign-in is disabled until its client credentials are configured.
+
 ### Log-based login retrieval
 
 Magic-link login URLs are printed to application logs. Tail logs and look for
