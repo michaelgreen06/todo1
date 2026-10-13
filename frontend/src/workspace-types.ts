@@ -83,4 +83,5 @@ export type DialogState =
     }
   | { readonly type: "move"; readonly item: TodoItem }
   | { readonly type: "bulk-move" }
+  | { readonly type: "delete"; readonly items: ReadonlyArray<TodoItem> }
   | null;

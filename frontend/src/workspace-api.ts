@@ -91,6 +91,21 @@ export async function bulkMove(input: {
   return validateWorkspaceResponse(response).workspace;
 }
 
+export async function bulkDelete(input: {
+  readonly itemIds: ReadonlyArray<string>;
+} & WorkspaceSelection): Promise<WorkspaceView> {
+  const response = await fetchJson("/api/todos/bulk/delete", {
+    method: "POST",
+    body: JSON.stringify({
+      itemIds: input.itemIds,
+      view: input.view,
+      folderId: input.folderId,
+      statusIds: input.statusIds,
+    }),
+  });
+  return validateWorkspaceResponse(response).workspace;
+}
+
 export async function reorderTodos(input: {
   readonly movedId: string;
   readonly previousId: string | null;

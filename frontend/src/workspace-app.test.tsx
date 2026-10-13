@@ -85,6 +85,17 @@ const secondItem: TodoItem = {
   todoRank: "a1",
 };
 
+const deferredItem: TodoItem = {
+  ...inboxItem,
+  id: "todo-3",
+  statusId: "deferred",
+  statusName: "Deferred",
+  statusCategory: "deferred",
+  title: "Someday trip",
+  body: "Plan the trip",
+  todoRank: "a2",
+};
+
 describe("WorkspaceApp", () => {
   const originalFetch = globalThis.fetch;
   const originalScrollTo = window.scrollTo;
@@ -724,6 +735,135 @@ describe("WorkspaceApp", () => {
     expect(screen.getByText("Rank conflict")).toBeInTheDocument();
   });
 
+  it("deletes one item through the batch API only after explicit confirmation", async () => {
+    const user = userEvent.setup();
+    const requests: Array<{ readonly path: string; readonly body: string }> = [];
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const path = input.toString();
+      requests.push({ path, body: typeof init?.body === "string" ? init.body : "" });
+
+      if (path === "/api/todos/bulk/delete") {
+        return jsonResponse({ workspace: makeWorkspace({ todos: [secondItem] }) });
+      }
+
+      return jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem, secondItem] }) });
+    };
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
+    await user.click(within(todoCard("todo-1")).getByRole("button", { name: "Delete" }));
+
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "Delete 1 item?" })).toBeInTheDocument();
+    expect(within(dialog).getByText("This permanently deletes 1 item and its status history. This cannot be undone. Original capture records, if any, remain stored.")).toBeInTheDocument();
+    expect(requests.filter((request) => request.path.includes("/delete"))).toEqual([]);
+
+    await user.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+    expect(requests.filter((request) => request.path.includes("/delete"))).toEqual([
+      {
+        path: "/api/todos/bulk/delete",
+        body: JSON.stringify({ itemIds: ["todo-1"], view: "actions", folderId: "folder-1", statusIds: ["active"] }),
+      },
+    ]);
+    expect(screen.queryByRole("heading", { name: "Call client" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Draft memo" })).toBeInTheDocument();
+  });
+
+  it("cancels single and bulk deletion without any write request", async () => {
+    const user = userEvent.setup();
+    const requests: Array<{ readonly path: string; readonly body: string }> = [];
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      requests.push({ path: input.toString(), body: typeof init?.body === "string" ? init.body : "" });
+      return jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem, secondItem] }) });
+    };
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
+    await user.click(within(todoCard("todo-1")).getByRole("button", { name: "Delete" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("Select all"));
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+    expect(screen.getByRole("heading", { name: "Delete 2 items?" })).toBeInTheDocument();
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+    expect(requests.filter((request) => request.path.includes("/delete"))).toEqual([]);
+  });
+
+  it("deletes exactly the selected visible items, including an explicitly selected deferred item", async () => {
+    const user = userEvent.setup();
+    const requests: Array<{ readonly path: string; readonly body: string }> = [];
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const path = input.toString();
+      requests.push({ path, body: typeof init?.body === "string" ? init.body : "" });
+
+      if (path === "/api/todos/bulk/delete") {
+        return jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem, secondItem], selectedStatusIds: ["active", "deferred"] }) });
+      }
+
+      return jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem, secondItem, deferredItem], selectedStatusIds: ["active", "deferred"] }) });
+    };
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete selected" })).toBeDisabled();
+
+    await user.click(screen.getByLabelText("Select Someday trip"));
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "Delete 1 item?" })).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+    expect(requests.filter((request) => request.path.includes("/delete"))).toEqual([
+      {
+        path: "/api/todos/bulk/delete",
+        body: JSON.stringify({ itemIds: ["todo-3"], view: "actions", folderId: "folder-1", statusIds: ["active", "deferred"] }),
+      },
+    ]);
+    expect(screen.getByText("0 selected")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Someday trip" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the delete dialog and selection open with the API error", async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      if (input.toString() === "/api/todos/bulk/delete") {
+        return jsonResponse({ error: "Database is locked." }, 500);
+      }
+
+      return jsonResponse({ workspace: makeWorkspace({ todos: [inboxItem, secondItem] }) });
+    };
+
+    render(<WorkspaceApp />);
+
+    expect(await screen.findByRole("heading", { name: "Project" })).toBeInTheDocument();
+    await user.click(screen.getByLabelText("Select all"));
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete permanently" }));
+
+    const dialog = screen.getByRole("dialog");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Database is locked.");
+    expect(within(dialog).getByRole("heading", { name: "Delete 2 items?" })).toBeInTheDocument();
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+    expect(screen.getByLabelText("Select Call client")).toBeChecked();
+    expect(screen.getByLabelText("Select Draft memo")).toBeChecked();
+  });
+
   it("rejects invalid API responses", () => {
     expect(() => validateWorkspaceResponse({ nope: true })).toThrow("Invalid workspace response.");
   });
@@ -758,6 +898,16 @@ function makeWorkspace(overrides: {
     statuses: [activeStatus, completedStatus],
     selectedStatusIds: overrides.selectedStatusIds ?? ["active"],
   };
+}
+
+function todoCard(itemId: string): HTMLElement {
+  const card = document.querySelector<HTMLElement>(`[data-todo-id="${itemId}"]`);
+
+  if (card === null) {
+    throw new Error(`Missing todo card ${itemId}`);
+  }
+
+  return card;
 }
 
 function visibleTodoTitles(): ReadonlyArray<string> {

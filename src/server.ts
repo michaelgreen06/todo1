@@ -35,9 +35,11 @@ import {
   reorderVisibleTodoItem,
   routeCaptureForMvp,
   updateTodoItem,
+  deleteTodoItemsForUser,
   WORKSPACE_VIEWS,
 } from "./db.js";
 import {
+  renderDeleteConfirmPage,
   renderEditPage,
   renderLoginPage,
   renderNotFoundPage,
@@ -57,6 +59,7 @@ import { dispatchCaptureToTelegramHermes } from "./telegram-hermes.js";
 import { hashRawToken } from "./token.js";
 import {
   validateCaptureInput,
+  validateDeleteItemIds,
   validateEmail,
   validateFolderName,
   validateFolderPath,
@@ -338,6 +341,18 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
     return;
   }
 
+  if (method === "GET" && todoRoute.action === "delete") {
+    // TODO: Remove this SSR fallback after the React workspace is stable.
+    handleDeleteConfirmPage(response, user, todoRoute.id, url);
+    return;
+  }
+
+  if (method === "POST" && todoRoute.action === "delete") {
+    // TODO: Remove this SSR fallback after the React workspace is stable.
+    await handleDeleteTodoFromForm(request, response, user, todoRoute.id);
+    return;
+  }
+
   if (method === "POST" && (todoRoute.action === "move-up" || todoRoute.action === "move-down")) {
     await handleMoveVisibleTodo(request, response, user, todoRoute.id, todoRoute.action === "move-up" ? "up" : "down");
     return;
@@ -438,6 +453,11 @@ async function handleApiRequest(
 
   if (method === "POST" && url.pathname === "/api/todos/bulk/location") {
     await handleApiBulkChangeLocation(request, response, user);
+    return;
+  }
+
+  if (method === "POST" && url.pathname === "/api/todos/bulk/delete") {
+    await handleApiBulkDeleteTodos(request, response, user);
     return;
   }
 
@@ -691,6 +711,23 @@ async function handleApiBulkChangeLocation(request: IncomingMessage, response: S
 
   for (const todoId of todoIds) {
     moveTodoItemToLocation(todoId, user.id, folderId);
+  }
+
+  sendWorkspaceViewResponse(response, user, parseApiViewPayload(rawPayload));
+}
+
+async function handleApiBulkDeleteTodos(request: IncomingMessage, response: ServerResponse, user: User): Promise<void> {
+  const rawPayload = await readApiJsonBody(request);
+  const itemIdsResult = validateDeleteItemIds(isJsonRecord(rawPayload) ? rawPayload["itemIds"] : undefined);
+
+  if (!itemIdsResult.ok) {
+    sendApiValidationError(response, itemIdsResult.message);
+    return;
+  }
+
+  if (deleteTodoItemsForUser(user.id, itemIdsResult.value) === "not-found") {
+    sendJsonValue(response, 404, { error: "Todo not found" });
+    return;
   }
 
   sendWorkspaceViewResponse(response, user, parseApiViewPayload(rawPayload));
@@ -1186,6 +1223,39 @@ async function handleReorderTodos(request: IncomingMessage, url: URL, response: 
   const selectedStatusIds = getSelectedStatusIds(url, statuses);
   const wasReordered = reorderVisibleTodoItem(user.id, reorderResult.value, folder?.id ?? null, selectedStatusIds);
   sendJson(response, wasReordered ? 200 : 400, wasReordered ? '{"ok":true}' : '{"ok":false}');
+}
+
+function handleDeleteConfirmPage(response: ServerResponse, user: User, todoId: string, url: URL): void {
+  const todo = findItemForUser(todoId, user.id);
+
+  if (todo === null) {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  sendHtml(response, 200, renderDeleteConfirmPage({
+    todo,
+    returnTo: getSafeReturnTo(url.searchParams.get("returnTo"), itemLocationUrl(todo.nodeId)),
+  }));
+}
+
+async function handleDeleteTodoFromForm(request: IncomingMessage, response: ServerResponse, user: User, todoId: string): Promise<void> {
+  const todo = findItemForUser(todoId, user.id);
+
+  if (todo === null) {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  const form = new URLSearchParams(await readRequestBody(request));
+  const returnTo = getReturnTo(form, itemLocationUrl(todo.nodeId));
+
+  if (deleteTodoItemsForUser(user.id, [todo.id]) === "not-found") {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  redirect(response, returnTo);
 }
 
 function sendTodoPageForReturnTo(response: ServerResponse, user: User, returnTo: string, error: string): void {

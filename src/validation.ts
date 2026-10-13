@@ -41,9 +41,47 @@ const MAX_TITLE_LENGTH = 160;
 const MAX_BODY_LENGTH = 10_000;
 const MAX_STATUS_NOTE_LENGTH = 2_000;
 const MAX_FOLDER_NAME_LENGTH = 160;
+const MAX_DELETE_ITEM_IDS = 1_000;
+const MAX_ITEM_ID_LENGTH = 64;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/u;
 const CAPTURE_KEYS = new Set(["client_capture_id", "text", "captured_at", "metadata"]);
+
+export function validateDeleteItemIds(value: unknown): ValidationResult<ReadonlyArray<string>> {
+  if (!Array.isArray(value)) {
+    return { ok: false, message: "itemIds must be an array." };
+  }
+
+  const entries: ReadonlyArray<unknown> = value;
+
+  if (entries.length === 0) {
+    return { ok: false, message: "Select at least one item to delete." };
+  }
+
+  if (entries.length > MAX_DELETE_ITEM_IDS) {
+    return { ok: false, message: `Delete at most ${MAX_DELETE_ITEM_IDS.toString()} items at a time.` };
+  }
+
+  const itemIds: Array<string> = [];
+
+  for (const entry of entries) {
+    if (typeof entry !== "string") {
+      return { ok: false, message: "Item IDs must be strings." };
+    }
+
+    if (entry.trim().length === 0 || entry !== entry.trim()) {
+      return { ok: false, message: "Item IDs must not be empty or contain surrounding whitespace." };
+    }
+
+    if (entry.length > MAX_ITEM_ID_LENGTH) {
+      return { ok: false, message: "Item IDs are too long." };
+    }
+
+    itemIds.push(entry);
+  }
+
+  return { ok: true, value: [...new Set(itemIds)] };
+}
 
 export function validateEmail(rawEmail: string | null): ValidationResult<string> {
   if (rawEmail === null) {

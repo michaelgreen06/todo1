@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from "react";
 
 import {
+  bulkDelete,
   bulkMove,
   changeStatus,
   createFolder,
@@ -723,6 +724,34 @@ export function WorkspaceApp(): ReactElement {
     }
   }
 
+  function openDeleteDialog(items: ReadonlyArray<TodoItem>): void {
+    setDialog({ type: "delete", items });
+    setFormStatus(emptyFormStatus);
+  }
+
+  async function deleteItems(items: ReadonlyArray<TodoItem>): Promise<void> {
+    setFormStatus({ error: null, isSaving: true });
+
+    try {
+      const nextWorkspace = await bulkDelete({
+        ...selection,
+        itemIds: items.map((item) => item.id),
+      });
+      setWorkspace(nextWorkspace);
+      setSelection(getSelectionFromWorkspace(nextWorkspace));
+      setSelectedItemIds([]);
+
+      if (editingItemId !== null && items.some((item) => item.id === editingItemId)) {
+        stopEditing();
+      }
+
+      setDialog(null);
+      setFormStatus(emptyFormStatus);
+    } catch (deleteError: unknown) {
+      setFormStatus({ error: errorMessage(deleteError, "Could not delete items."), isSaving: false });
+    }
+  }
+
   async function moveItemByButton(item: TodoItem, direction: "up" | "down"): Promise<void> {
     if (workspace === null) {
       return;
@@ -884,6 +913,14 @@ export function WorkspaceApp(): ReactElement {
               >
                 Move selected
               </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={selectedItems.length === 0}
+                onClick={() => { openDeleteDialog(selectedItems); }}
+              >
+                Delete selected
+              </button>
             </div>
             {workspace.todos.length === 0 ? (
               <p className="empty-state">No matching items in this location.</p>
@@ -921,6 +958,7 @@ export function WorkspaceApp(): ReactElement {
                     onSaveEdit={(todo) => { void saveEdit(todo); }}
                     onStatus={(todo) => { setDialog({ type: "status", item: todo }); setFormStatus(emptyFormStatus); }}
                     onMove={(todo) => { setDialog({ type: "move", item: todo }); setFormStatus(emptyFormStatus); }}
+                    onDelete={(todo) => { openDeleteDialog([todo]); }}
                     onReorder={(todo, direction) => { void moveItemByButton(todo, direction); }}
                     onDragPointerDown={handleDragPointerDown}
                   />
@@ -968,6 +1006,15 @@ export function WorkspaceApp(): ReactElement {
               selectedCount={selectedItems.length}
               isSaving={formStatus.isSaving}
               onSubmit={saveMove}
+            />
+          ) : null}
+          {dialog.type === "delete" ? (
+            <DeleteDialog
+              items={dialog.items}
+              isSaving={formStatus.isSaving}
+              error={formStatus.error}
+              onCancel={() => { setDialog(null); setFormStatus(emptyFormStatus); }}
+              onConfirm={deleteItems}
             />
           ) : null}
         </DialogShell>
@@ -1206,6 +1253,7 @@ function TodoCard(props: {
   readonly onSaveEdit: (item: TodoItem) => void;
   readonly onStatus: (item: TodoItem) => void;
   readonly onMove: (item: TodoItem) => void;
+  readonly onDelete: (item: TodoItem) => void;
   readonly onReorder: (item: TodoItem, direction: "up" | "down") => void;
   readonly onDragPointerDown: (item: TodoItem, event: ReactPointerEvent<HTMLButtonElement>) => void;
 }): ReactElement {
@@ -1287,6 +1335,7 @@ function TodoCard(props: {
               <button type="button" className="secondary" onClick={() => { props.onMove(props.item); }}>Move</button>
               <button type="button" className="secondary" disabled={props.index === 0} onClick={() => { props.onReorder(props.item, "up"); }}>Move up</button>
               <button type="button" className="secondary" disabled={props.index === props.total - 1} onClick={() => { props.onReorder(props.item, "down"); }}>Move down</button>
+              <button type="button" className="danger" onClick={() => { props.onDelete(props.item); }}>Delete</button>
             </div>
           </>
         )}
@@ -1309,6 +1358,29 @@ function DialogShell(props: {
         {props.children}
       </section>
     </div>
+  );
+}
+
+function DeleteDialog(props: {
+  readonly items: ReadonlyArray<TodoItem>;
+  readonly isSaving: boolean;
+  readonly error: string | null;
+  readonly onCancel: () => void;
+  readonly onConfirm: (items: ReadonlyArray<TodoItem>) => Promise<void>;
+}): ReactElement {
+  const count = props.items.length.toString();
+  const noun = props.items.length === 1 ? "item" : "items";
+
+  return (
+    <form className="stack" onSubmit={(event) => { event.preventDefault(); void props.onConfirm(props.items); }}>
+      <h1>{`Delete ${count} ${noun}?`}</h1>
+      <p>{`This permanently deletes ${count} ${noun} and ${props.items.length === 1 ? "its" : "their"} status history. This cannot be undone. Original capture records, if any, remain stored.`}</p>
+      {props.error === null ? null : <p className="notice error" role="alert">{props.error}</p>}
+      <div className="button-row">
+        <button type="submit" className="danger" disabled={props.isSaving}>Delete permanently</button>
+        <button type="button" className="secondary" disabled={props.isSaving} onClick={props.onCancel}>Cancel</button>
+      </div>
+    </form>
   );
 }
 
