@@ -6,7 +6,7 @@ GitHub sign-in is for existing Todo accounts. It does not create accounts or gra
 
 ## Callback URL
 
-Register this exact URL as the **Authorization callback URL** of the GitHub OAuth App:
+Register this exact URL as a **Callback URL** of the GitHub App:
 
 ```text
 https://todo.michaelgreen06.com/auth/github/callback
@@ -20,8 +20,8 @@ Set these on the Railway service. Do not commit values.
 
 | Variable | Required | Value |
 | --- | --- | --- |
-| `GITHUB_OAUTH_CLIENT_ID` | Yes, with the secret | Client ID from the GitHub OAuth App |
-| `GITHUB_OAUTH_CLIENT_SECRET` | Yes, with the ID | Client secret from the GitHub OAuth App (treat as a secret) |
+| `GITHUB_OAUTH_CLIENT_ID` | Yes, with the secret | Client ID from the GitHub App (not App ID) |
+| `GITHUB_OAUTH_CLIENT_SECRET` | Yes, with the ID | Client secret from the GitHub App (treat as a secret; not the private key) |
 | `PUBLIC_BASE_URL` | Yes, when GitHub is enabled | `https://todo.michaelgreen06.com` (origin only: no path, query, or trailing data) |
 
 Rules, enforced at startup in `src/process-env.ts`:
@@ -30,15 +30,14 @@ Rules, enforced at startup in `src/process-env.ts`:
 - With both set, `PUBLIC_BASE_URL` must be a valid `http` or `https` origin. Otherwise the server does not start.
 - With neither set, the GitHub button and `/auth/github/start` are disabled (404). The callback safely redirects to `/login` without exposing any code. Email sign-in is unchanged.
 
-## GitHub OAuth App setup
+## GitHub App setup
 
-1. In GitHub: Settings → Developer settings → OAuth Apps → New OAuth App. Use an OAuth App, not a GitHub App.
-2. Homepage URL: `https://todo.michaelgreen06.com`
-3. Authorization callback URL: `https://todo.michaelgreen06.com/auth/github/callback`
-4. Generate a client secret and copy it into Railway. Do not enable device flow.
-5. The app requests only the `user:email` scope. It requests no repository access.
+1. In GitHub: Settings → Developer settings → GitHub Apps → `todo-ap` → General. Set the Homepage URL to `https://todo.michaelgreen06.com` and a Callback URL to `https://todo.michaelgreen06.com/auth/github/callback`.
+2. Under Permissions & events → User permissions, set **Email addresses: Read-only**. The app needs this to call `/user/emails`. No repository permissions are required for sign-in.
+3. Under General, copy the **Client ID** and generate a **Client secret**. Copy the secret securely into Railway, not into the repository or a chat. The downloaded `.private-key.pem` is for GitHub App server-to-server authentication and is **not used for user sign-in**; do not upload it.
+4. Leave the login flow enabled. This app uses the GitHub App web OAuth flow and PKCE; GitHub App authorization is permission-based, not OAuth App scope-based.
 
-For local testing, use a separate OAuth App whose callback is `http://localhost:3000/auth/github/callback`, with `PUBLIC_BASE_URL=http://localhost:3000`.
+For local testing, use a separate GitHub App whose callback is `http://localhost:3000/auth/github/callback`, with `PUBLIC_BASE_URL=http://localhost:3000`.
 
 ## How sign-in works
 
@@ -69,7 +68,7 @@ GitHub's numeric ID is validated but not stored. Storing it would require a sche
 
 1. Delete `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` from Railway and redeploy or restart.
 2. The GitHub button disappears and `/auth/github/start` returns 404. The callback redirects to `/login` without exposing a code. Email sign-in is unaffected.
-3. Optional: remove the GitHub OAuth App in GitHub.
+3. Optional: remove the GitHub App in GitHub.
 4. Sessions created through GitHub remain valid until they expire, as with any session. To end them early, revoke them manually. This is a data change and is not part of rollback.
 
 The `github_oauth_states` table is created by `CREATE TABLE IF NOT EXISTS` at startup. It contains only short-lived state hashes and can be dropped if GitHub sign-in is removed permanently.

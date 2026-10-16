@@ -203,7 +203,7 @@ Copy the raw token immediately. Same story as local: only the hash is stored.
 ### Sign-in options
 
 Email magic-link login uses the Railway logs, as described below. Optional GitHub OAuth
-sign-in for existing Todo accounts avoids log retrieval and requires no app email service;
+sign-in for existing Todo accounts via a GitHub App avoids log retrieval and requires no app email service;
 see [GitHub sign-in setup](docs/github-sign-in.md). New sessions last 90 days.
 GitHub sign-in is disabled until its client credentials are configured.
 

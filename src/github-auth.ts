@@ -14,7 +14,6 @@ const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token";
 const GITHUB_USER_URL = "https://api.github.com/user";
 const GITHUB_USER_EMAILS_URL = "https://api.github.com/user/emails";
-const GITHUB_OAUTH_SCOPE = "user:email";
 const GITHUB_API_VERSION = "2022-11-28";
 const USER_AGENT = "todo-mvp";
 
@@ -79,7 +78,6 @@ export function startGitHubSignIn(config: GitHubOAuthConfig): GitHubSignInStart 
   const query = new URLSearchParams({
     client_id: config.clientId,
     redirect_uri: config.callbackUrl,
-    scope: GITHUB_OAUTH_SCOPE,
     state,
     code_challenge: createHash("sha256").update(codeVerifier, "utf8").digest("base64url"),
     code_challenge_method: "S256",
