@@ -4,6 +4,7 @@ import { CAPTURE_PROMPT_RULES } from "./capture-router.js";
 export type LoginPageOptions = {
   readonly message: string | null;
   readonly error: string | null;
+  readonly githubEnabled: boolean;
 };
 
 export type TodoPageOptions = {
@@ -32,19 +33,32 @@ export type PromptsPageOptions = {
 };
 
 export function renderLoginPage(options: LoginPageOptions): string {
+  const githubSection = options.githubEnabled
+    ? `
+        <section class="stack" aria-labelledby="github-login-heading">
+          <h2 id="github-login-heading">Sign in with GitHub</h2>
+          <p>Uses a verified email on your GitHub account. Only existing Todo accounts can sign in this way.</p>
+          <a href="/auth/github/start" class="button-link">Continue with GitHub</a>
+        </section>`
+    : "";
+
   return renderLayout("Sign in", `
     <main class="auth-shell">
       <section class="panel" aria-labelledby="login-heading">
         <p class="eyebrow">Todo MVP</p>
-        <h1 id="login-heading">Sign in with email</h1>
-        <p>Enter your email address. For the MVP, the magic link prints in the terminal.</p>
+        <h1 id="login-heading">Sign in</h1>
         ${renderNotice(options.message, "success")}
         ${renderNotice(options.error, "error")}
-        <form action="/login" method="post" class="stack">
-          <label for="email">Email address</label>
-          <input id="email" name="email" type="email" autocomplete="email" required>
-          <button type="submit">Send magic link</button>
-        </form>
+        ${githubSection}
+        <section class="stack" aria-labelledby="email-login-heading">
+          <h2 id="email-login-heading">Sign in with email</h2>
+          <p>Enter your email address. For the MVP, the magic link prints in the terminal.</p>
+          <form action="/login" method="post" class="stack">
+            <label for="email">Email address</label>
+            <input id="email" name="email" type="email" autocomplete="email" required>
+            <button type="submit">Send magic link</button>
+          </form>
+        </section>
       </section>
     </main>
   `, "");

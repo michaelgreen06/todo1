@@ -47,6 +47,15 @@ import {
   renderTodoPage,
 } from "./html.js";
 import {
+  completeGitHubSignIn,
+  describeGitHubSignInFailure,
+  GITHUB_STATE_COOKIE_NAME,
+  GITHUB_STATE_TTL_SECONDS,
+  parseGitHubSignInFailure,
+  startGitHubSignIn,
+} from "./github-auth.js";
+import {
+  getGitHubOAuthConfig,
   getHost,
   getPort,
   getPublicBaseUrl,
@@ -143,6 +152,8 @@ type ReorderPayload = {
 
 export function startServer(): void {
   initializeDatabase();
+  // Fails fast on partial or invalid GitHub sign-in configuration instead of hiding the button.
+  getGitHubOAuthConfig();
   const host = getHost();
   const port = getPort();
   const server = createServer((request, response) => {
@@ -173,9 +184,10 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
   }
 
   if (method === "GET" && url.pathname === "/login") {
-    sendHtml(response, 200, renderLoginPage({
+    setNoStoreNoReferrerHeaders(response);
+    sendHtml(response, 200, renderServerLoginPage({
       message: url.searchParams.get("sent") === "1" ? "Magic link created. Check the terminal." : null,
-      error: null,
+      error: githubLoginErrorMessage(url.searchParams.get("githubError")),
     }));
     return;
   }
@@ -187,6 +199,16 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
 
   if (method === "GET" && url.pathname === "/auth/magic") {
     await handleMagicAuth(request, url, response);
+    return;
+  }
+
+  if (method === "GET" && url.pathname === "/auth/github/start") {
+    handleGitHubSignInStart(request, response);
+    return;
+  }
+
+  if (method === "GET" && url.pathname === "/auth/github/callback") {
+    await handleGitHubSignInCallback(request, url, response);
     return;
   }
 
@@ -857,7 +879,7 @@ async function handleLogin(request: IncomingMessage, response: ServerResponse): 
   const emailResult = validateEmail(form.get("email"));
 
   if (!emailResult.ok) {
-    sendHtml(response, 400, renderLoginPage({ message: null, error: emailResult.message }));
+    sendHtml(response, 400, renderServerLoginPage({ message: null, error: emailResult.message }));
     return;
   }
 
@@ -870,12 +892,76 @@ async function handleMagicAuth(request: IncomingMessage, url: URL, response: Ser
   const consumedToken = await consumeMagicToken(url.searchParams.get("token"));
 
   if (consumedToken === null) {
-    sendHtml(response, 400, renderLoginPage({ message: null, error: "This magic link is invalid or expired." }));
+    sendHtml(response, 400, renderServerLoginPage({ message: null, error: "This magic link is invalid or expired." }));
     return;
   }
 
   setSessionCookie(response, consumedToken.sessionToken, shouldUseSecureCookies(request));
   redirect(response, "/");
+}
+
+function handleGitHubSignInStart(request: IncomingMessage, response: ServerResponse): void {
+  const config = getGitHubOAuthConfig();
+
+  if (config === null) {
+    sendHtml(response, 404, renderNotFoundPage());
+    return;
+  }
+
+  const signIn = startGitHubSignIn(config);
+  response.setHeader(
+    "Set-Cookie",
+    createGitHubStateCookieValue(signIn.state, GITHUB_STATE_TTL_SECONDS, shouldUseSecureCookies(request)),
+  );
+  redirect(response, signIn.authorizationUrl);
+}
+
+// The callback URL carries a one-time code and state. Configured outcomes redirect away from it,
+// and failures carry only a server-validated enum value, so the code never lands in a rendered page.
+async function handleGitHubSignInCallback(request: IncomingMessage, url: URL, response: ServerResponse): Promise<void> {
+  const useSecureCookies = shouldUseSecureCookies(request);
+  const config = getGitHubOAuthConfig();
+  // The one-time state cookie is cleared on every callback, whatever the outcome.
+  const cookies = [createGitHubStateCookieValue("", 0, useSecureCookies)];
+
+  setNoStoreNoReferrerHeaders(response);
+
+  if (config === null) {
+    response.setHeader("Set-Cookie", cookies);
+    redirect(response, "/login");
+    return;
+  }
+
+  const result = await completeGitHubSignIn(config, {
+    stateCookie: getCookie(request, GITHUB_STATE_COOKIE_NAME),
+    state: url.searchParams.get("state"),
+    code: url.searchParams.get("code"),
+    error: url.searchParams.get("error"),
+  });
+
+  if (!result.ok) {
+    response.setHeader("Set-Cookie", cookies);
+    redirect(response, `/login?githubError=${result.failure}`);
+    return;
+  }
+
+  cookies.push(createSessionCookieValue(result.sessionToken, getSessionMaxAgeSeconds(), useSecureCookies));
+  response.setHeader("Set-Cookie", cookies);
+  redirect(response, "/");
+}
+
+function setNoStoreNoReferrerHeaders(response: ServerResponse): void {
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader("Referrer-Policy", "no-referrer");
+}
+
+function githubLoginErrorMessage(value: string | null): string | null {
+  const failure = parseGitHubSignInFailure(value);
+  return failure === null ? null : describeGitHubSignInFailure(failure).message;
+}
+
+function renderServerLoginPage(options: { readonly message: string | null; readonly error: string | null }): string {
+  return renderLoginPage({ ...options, githubEnabled: getGitHubOAuthConfig() !== null });
 }
 
 function handleNavigate(response: ServerResponse, user: User, url: URL): void {
@@ -1774,6 +1860,10 @@ function clearSessionCookie(response: ServerResponse, useSecureCookies: boolean)
 
 function createSessionCookieValue(sessionToken: string, maxAgeSeconds: number, useSecureCookies: boolean): string {
   return `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionToken)}; Max-Age=${maxAgeSeconds.toString()}; Path=/; HttpOnly; SameSite=Lax${useSecureCookies ? "; Secure" : ""}`;
+}
+
+function createGitHubStateCookieValue(state: string, maxAgeSeconds: number, useSecureCookies: boolean): string {
+  return `${GITHUB_STATE_COOKIE_NAME}=${encodeURIComponent(state)}; Max-Age=${maxAgeSeconds.toString()}; Path=/auth/github; HttpOnly; SameSite=Lax${useSecureCookies ? "; Secure" : ""}`;
 }
 
 function redirect(response: ServerResponse, location: string): void {

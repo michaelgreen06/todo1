@@ -192,6 +192,14 @@ export function initializeDatabase(): void {
       revoked_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS github_oauth_states (
+      state_hash TEXT PRIMARY KEY,
+      code_verifier TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS device_tokens (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -379,6 +387,49 @@ export function findActiveSession(sessionHash: string, currentTime: string): Ses
   `));
 
   return row === null ? null : mapSession(row);
+}
+
+export function createSession(userId: string, sessionHash: string, expiresAt: string, currentTime: string): void {
+  executeSql(`
+    INSERT INTO sessions (id, user_id, session_hash, expires_at, created_at, revoked_at)
+    VALUES (${sql(globalThis.crypto.randomUUID())}, ${sql(userId)}, ${sql(sessionHash)}, ${sql(expiresAt)}, ${sql(currentTime)}, NULL);
+  `);
+}
+
+export function createGitHubOAuthState(stateHash: string, codeVerifier: string, expiresAt: string, currentTime: string): void {
+  executeSql(`
+    DELETE FROM github_oauth_states WHERE expires_at <= ${sql(currentTime)} OR used_at IS NOT NULL;
+    INSERT INTO github_oauth_states (state_hash, code_verifier, expires_at, used_at, created_at)
+    VALUES (${sql(stateHash)}, ${sql(codeVerifier)}, ${sql(expiresAt)}, NULL, ${sql(currentTime)});
+  `);
+}
+
+// Atomically marks an unused, unexpired state as used. Returns its PKCE verifier, or null if it
+// was unknown, expired, or already consumed (replay).
+export function consumeGitHubOAuthState(stateHash: string, currentTime: string): string | null {
+  const row = firstRow(queryRows(`
+    UPDATE github_oauth_states
+    SET used_at = ${sql(currentTime)}
+    WHERE state_hash = ${sql(stateHash)}
+      AND used_at IS NULL
+      AND expires_at > ${sql(currentTime)}
+    RETURNING code_verifier;
+  `));
+
+  return row === null ? null : getRequiredString(row, "code_verifier");
+}
+
+// Matches existing users only. Emails must already be trimmed and lowercased by the caller.
+export function findUsersByEmails(emails: ReadonlyArray<string>): Array<User> {
+  if (emails.length === 0) {
+    return [];
+  }
+
+  return queryRows(`
+    SELECT id, email, created_at
+    FROM users
+    WHERE LOWER(email) IN (${sqlList(emails)});
+  `).map(mapUser);
 }
 
 export function revokeSession(sessionHash: string): void {

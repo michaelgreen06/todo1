@@ -75,6 +75,39 @@ export function getPublicBaseUrl(): string | null {
   return normalizeBaseUrl(url);
 }
 
+export type GitHubOAuthConfig = {
+  readonly clientId: string;
+  readonly clientSecret: string;
+  readonly callbackUrl: string;
+};
+
+// Returns null when GitHub sign-in is not configured. Throws on partial or invalid configuration
+// so misconfiguration fails at startup instead of silently hiding the GitHub button.
+export function getGitHubOAuthConfig(): GitHubOAuthConfig | null {
+  const clientId = getOptionalNonEmptyEnv("GITHUB_OAUTH_CLIENT_ID");
+  const clientSecret = getOptionalNonEmptyEnv("GITHUB_OAUTH_CLIENT_SECRET");
+
+  if (clientId === null && clientSecret === null) {
+    return null;
+  }
+
+  if (clientId === null || clientSecret === null) {
+    throw new Error("GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET must both be set, or both be unset.");
+  }
+
+  const publicBaseUrl = getPublicBaseUrl();
+
+  if (publicBaseUrl === null) {
+    throw new Error("PUBLIC_BASE_URL must be set when GitHub sign-in is configured.");
+  }
+
+  return {
+    clientId,
+    clientSecret,
+    callbackUrl: `${publicBaseUrl}/auth/github/callback`,
+  };
+}
+
 export function isTelegramHermesEnabled(): boolean {
   const configuredValue = env["TELEGRAM_HERMES_ENABLED"];
 
@@ -127,6 +160,22 @@ function parsePublicBaseUrl(baseUrl: string): URL {
 
 function normalizeBaseUrl(url: URL): string {
   return url.origin;
+}
+
+function getOptionalNonEmptyEnv(name: string): string | null {
+  const configuredValue = env[name];
+
+  if (configuredValue === undefined) {
+    return null;
+  }
+
+  const value = configuredValue.trim();
+
+  if (value.length === 0) {
+    throw new Error(`${name} must not be empty.`);
+  }
+
+  return value;
 }
 
 function requireNonEmptyEnv(name: string): string {
