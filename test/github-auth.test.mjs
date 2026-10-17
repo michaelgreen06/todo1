@@ -101,7 +101,7 @@ test("GitHub OAuth configuration", async (suite) => {
 });
 
 test("GitHub sign-in start", async (suite) => {
-  await suite.test("redirects to GitHub App without OAuth App scopes, with S256 PKCE and one-time state", async () => {
+  await suite.test("redirects to GitHub OAuth App with user:email scope, S256 PKCE and one-time state", async () => {
     await withDatabaseAndEnvironment(GITHUB_ENABLED_ENV, async () => {
       const start = await sendRequest({ method: "GET", url: "/auth/github/start" });
       const location = new globalThis.URL(start.headers["Location"]);
@@ -110,7 +110,7 @@ test("GitHub sign-in start", async (suite) => {
       assert.equal(location.origin + location.pathname, "https://github.com/login/oauth/authorize");
       assert.equal(location.searchParams.get("client_id"), CLIENT_ID);
       assert.equal(location.searchParams.get("redirect_uri"), CALLBACK_URL);
-      assert.equal(location.searchParams.has("scope"), false);
+      assert.equal(location.searchParams.get("scope"), "user:email");
       assert.equal(location.searchParams.get("code_challenge_method"), "S256");
       assert.match(location.searchParams.get("code_challenge") ?? "", /^[A-Za-z0-9_-]{43}$/u);
       assert.equal(location.searchParams.get("state"), readCookieValue(start, "todo_github_state"));
