@@ -25,19 +25,19 @@ test("capture router", async (suite) => {
     });
   });
 
-  await suite.test("routes spoken list commands to Errands subfolders", () => {
+  await suite.test("routes spoken list commands to Errands list destinations", () => {
     assert.deepEqual(routeCaptureText("add peanut butter to my costco list"), {
-      kind: "folder",
+      kind: "errand-list",
       title: null,
       body: "peanut butter",
-      folderPath: ["Actions", "Errands", "costco"],
+      listName: "costco",
       ruleName: "list-command",
     });
     assert.deepEqual(routeCaptureText("add oats to the natural grocers list."), {
-      kind: "folder",
+      kind: "errand-list",
       title: null,
       body: "oats",
-      folderPath: ["Actions", "Errands", "natural grocers"],
+      listName: "natural grocers",
       ruleName: "list-command",
     });
   });

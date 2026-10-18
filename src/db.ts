@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { generateKeyBetween } from "fractional-indexing";
 
+import type { CaptureRoute } from "./capture-router.js";
 import { routeCaptureText } from "./capture-router.js";
+import { matchErrandList } from "./errand-list-matcher.js";
 import { getTodoDatabasePath } from "./process-env.js";
 
 export const STATUS_CATEGORIES = {
@@ -144,6 +146,7 @@ export type WorkspaceViewMode = (typeof WORKSPACE_VIEWS)[keyof typeof WORKSPACE_
 
 const ITEM_KIND_ACTION = "todo";
 const ITEM_KIND_REFERENCE = "reference";
+const ERRANDS_FOLDER_NAME = "Errands";
 const RESERVED_ROOT_NAMES = {
   actions: "Actions",
   reference: "Reference",
@@ -506,7 +509,7 @@ export function routeCaptureForMvp(deviceToken: DeviceToken, input: CaptureInput
   const itemId = globalThis.crypto.randomUUID();
   const historyId = globalThis.crypto.randomUUID();
   const route = routeCaptureText(input.text);
-  const routeFolder = route.folderPath === null ? null : createFolderPath(deviceToken.userId, route.folderPath);
+  const routeFolder = resolveRouteFolder(deviceToken.userId, route);
   const routeNodeId = routeFolder === null ? null : routeFolder.id;
   const todoRank = generateTopTodoRank(deviceToken.userId, routeNodeId);
   const captureInsert = tableHasColumn("captures", "transcript")
@@ -1130,7 +1133,26 @@ function getCaptureIngestionResult(capture: Capture, duplicate: boolean): Captur
 function getCaptureRouteRuleName(text: string): string | null {
   const route = routeCaptureText(text);
 
-  return route.kind === "folder" ? route.ruleName : null;
+  return route.kind === "default" ? null : route.ruleName;
+}
+
+function resolveRouteFolder(userId: string, route: CaptureRoute): Folder | null {
+  switch (route.kind) {
+    case "default":
+      return null;
+    case "folder":
+      return createFolderPath(userId, route.folderPath);
+    case "errand-list":
+      return resolveErrandListFolder(userId, route.listName);
+  }
+}
+
+// Never creates a store folder: an unmatched or ambiguous list name goes to Actions / Errands for review.
+function resolveErrandListFolder(userId: string, listName: string): Folder {
+  const errandsFolder = createFolderPath(userId, [RESERVED_ROOT_NAMES.actions, ERRANDS_FOLDER_NAME]);
+  const match = matchErrandList(listName, listChildFolders(userId, errandsFolder.id));
+
+  return match.kind === "matched" ? match.candidate : errandsFolder;
 }
 
 function findStatusForUser(statusId: string, userId: string): Status | null {
@@ -1142,6 +1164,18 @@ function findStatusForUser(statusId: string, userId: string): Status | null {
   `));
 
   return row === null ? null : mapStatus(row);
+}
+
+function listChildFolders(userId: string, parentId: string): Array<Folder> {
+  return queryRows(`
+    SELECT nodes.id, nodes.user_id, nodes.parent_id, nodes.name, nodes.kind,
+      0 AS direct_item_count, nodes.created_at, nodes.updated_at
+    FROM nodes
+    WHERE nodes.user_id = ${sql(userId)}
+      AND nodes.parent_id = ${sql(parentId)}
+      AND nodes.kind = ${sql("folder")}
+    ORDER BY nodes.name COLLATE NOCASE ASC, nodes.created_at ASC;
+  `).map(mapFolder);
 }
 
 function findSiblingFolder(userId: string, parentId: string | null, name: string): Folder | null {
