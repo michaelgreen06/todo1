@@ -1,4 +1,4 @@
-export type CaptureRoute = DefaultCaptureRoute | FolderCaptureRoute;
+export type CaptureRoute = DefaultCaptureRoute | FolderCaptureRoute | ErrandListCaptureRoute;
 
 export type CapturePromptRule = {
   readonly name: string;
@@ -22,7 +22,16 @@ type FolderCaptureRoute = {
   readonly ruleName: string;
 };
 
-type CaptureRule = (text: string) => FolderCaptureRoute | null;
+// Resolved against the user's existing Errands folders at ingestion time (see db.ts).
+type ErrandListCaptureRoute = {
+  readonly kind: "errand-list";
+  readonly title: null;
+  readonly body: string;
+  readonly listName: string;
+  readonly ruleName: string;
+};
+
+type CaptureRule = (text: string) => CaptureRoute | null;
 
 const AGENT_PREFIX_PATTERN = /^\s*agent\b[\s,.:;!?-]*/iu;
 const LIST_COMMAND_PATTERN = /^\s*add\s+(.+?)\s+to\s+(.+?)\s+list\s*[.!?]*\s*$/iu;
@@ -110,7 +119,7 @@ function routeAgentPrefix(text: string): FolderCaptureRoute | null {
   };
 }
 
-function routeListCommand(text: string): FolderCaptureRoute | null {
+function routeListCommand(text: string): ErrandListCaptureRoute | null {
   const match = LIST_COMMAND_PATTERN.exec(text);
 
   if (match === null) {
@@ -126,10 +135,10 @@ function routeListCommand(text: string): FolderCaptureRoute | null {
   }
 
   return {
-    kind: "folder",
+    kind: "errand-list",
     title: null,
     body: item,
-    folderPath: ["Actions", "Errands", list],
+    listName: list,
     ruleName: "list-command",
   };
 }

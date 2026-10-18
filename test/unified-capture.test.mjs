@@ -681,6 +681,180 @@ test("unified capture server MVP", async (suite) => {
     });
   });
 
+  await suite.test("routes misspelled list names to the one matching existing Errands folder without creating a store folder", async () => {
+    await withDatabaseAsync(async (databasePath) => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("list-fuzzy@example.com");
+      const existingCostco = createFolderPath(user.id, ["Actions", "Errands", "Costco"]);
+      const rawToken = "list-fuzzy-token";
+      createDeviceToken(user.id, "Michael phone", hashRawToken(rawToken));
+
+      const spokenCasco = "add paper towels to my casco list";
+      const spokenCostCo = "add peanut butter to my cost co list";
+      const casco = await postCapture(`Bearer ${rawToken}`, {
+        ...validCapture,
+        client_capture_id: "3b1a2d3e-8c4f-4f5a-9b6c-7d8e9f0a1b2c",
+        text: spokenCasco,
+      });
+      const costCo = await postCapture(`Bearer ${rawToken}`, {
+        ...validCapture,
+        client_capture_id: "4c2b3e4f-9d5a-4a6b-8c7d-8e9f0a1b2c3d",
+        text: spokenCostCo,
+      });
+      assert.equal(casco.statusCode, 201);
+      assert.equal(costCo.statusCode, 201);
+      const cascoBody = JSON.parse(casco.body);
+      const costCoBody = JSON.parse(costCo.body);
+
+      assert.deepEqual(queryRows(databasePath, `
+        SELECT items.node_id, items.title, items.body, items.source_capture_id
+        FROM items
+        WHERE items.id IN ('${cascoBody.routed_item_id}', '${costCoBody.routed_item_id}')
+        ORDER BY items.body;
+      `), [
+        { node_id: existingCostco.id, title: null, body: "paper towels", source_capture_id: cascoBody.capture_id },
+        { node_id: existingCostco.id, title: null, body: "peanut butter", source_capture_id: costCoBody.capture_id },
+      ]);
+      assert.deepEqual(queryRows(databasePath, `SELECT name FROM nodes WHERE user_id = '${user.id}' AND kind = 'folder' ORDER BY name;`), [
+        { name: "Actions" },
+        { name: "Costco" },
+        { name: "Errands" },
+        { name: "Reference" },
+      ]);
+      assert.deepEqual(queryRows(databasePath, `SELECT text FROM captures WHERE user_id = '${user.id}' ORDER BY text;`), [
+        { text: spokenCasco },
+        { text: spokenCostCo },
+      ]);
+    });
+  });
+
+  await suite.test("routes unknown, ambiguous, and missing-Errands list names to Actions / Errands for review", async () => {
+    await withDatabaseAsync(async (databasePath) => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("list-review@example.com");
+      const rawToken = "list-review-token";
+      createDeviceToken(user.id, "Michael phone", hashRawToken(rawToken));
+
+      const unknown = await postCapture(`Bearer ${rawToken}`, {
+        ...validCapture,
+        client_capture_id: "5d3c4f5a-0e6b-4b7c-9d8e-9f0a1b2c3d4e",
+        text: "add milk to my trader joes list",
+      });
+      assert.equal(unknown.statusCode, 201);
+      const unknownBody = JSON.parse(unknown.body);
+      const errandsRow = queryRows(databasePath, `
+        SELECT nodes.id, nodes.parent_id FROM nodes
+        WHERE nodes.user_id = '${user.id}' AND nodes.name = 'Errands';
+      `);
+      assert.deepEqual(queryRows(databasePath, `
+        SELECT items.node_id, items.body FROM items WHERE items.id = '${unknownBody.routed_item_id}';
+      `), [{ node_id: errandsRow[0]?.id, body: "milk" }]);
+
+      createFolderPath(user.id, ["Actions", "Errands", "Cosco"]);
+      createFolderPath(user.id, ["Actions", "Errands", "Casco"]);
+      const ambiguous = await postCapture(`Bearer ${rawToken}`, {
+        ...validCapture,
+        client_capture_id: "6e4d5a6b-1f7c-4c8d-8e9f-0a1b2c3d4e5f",
+        text: "add eggs to my costco list",
+      });
+      assert.equal(ambiguous.statusCode, 201);
+      const ambiguousBody = JSON.parse(ambiguous.body);
+      assert.deepEqual(queryRows(databasePath, `
+        SELECT items.node_id, items.body FROM items WHERE items.id = '${ambiguousBody.routed_item_id}';
+      `), [{ node_id: errandsRow[0]?.id, body: "eggs" }]);
+      assert.deepEqual(queryRows(databasePath, `SELECT name FROM nodes WHERE user_id = '${user.id}' AND kind = 'folder' ORDER BY name;`), [
+        { name: "Actions" },
+        { name: "Casco" },
+        { name: "Cosco" },
+        { name: "Errands" },
+        { name: "Reference" },
+      ]);
+    });
+  });
+
+  await suite.test("does not choose between duplicate normalized Errands folder names", async () => {
+    await withDatabaseAsync(async (databasePath) => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("list-normalized-tie@example.com");
+      const errands = createFolderPath(user.id, ["Actions", "Errands"]);
+      createFolderPath(user.id, ["Actions", "Errands", "Costco"]);
+      createFolderPath(user.id, ["Actions", "Errands", "Cost Co"]);
+      const rawToken = "list-normalized-tie-token";
+      createDeviceToken(user.id, "Phone", hashRawToken(rawToken));
+
+      const response = await postCapture(`Bearer ${rawToken}`, {
+        ...validCapture,
+        client_capture_id: "9b7a8d9e-4c0f-4f1a-9b2c-3d4e5f607182",
+        text: "add eggs to my cost co list",
+      });
+      assert.equal(response.statusCode, 201);
+      const result = JSON.parse(response.body);
+      assert.deepEqual(queryRows(databasePath, `
+        SELECT node_id, body FROM items WHERE id = '${result.routed_item_id}';
+      `), [{ node_id: errands.id, body: "eggs" }]);
+      assert.equal(queryRows(databasePath, `SELECT COUNT(*) AS count FROM nodes WHERE user_id = '${user.id}';`)[0]?.count, 5);
+    });
+  });
+
+  await suite.test("does not route list names to another user's Errands folders", async () => {
+    await withDatabaseAsync(async (databasePath) => {
+      initializeDatabase();
+      const owner = findOrCreateUserByEmail("list-owner@example.com");
+      const other = findOrCreateUserByEmail("list-other@example.com");
+      const ownerCostco = createFolderPath(owner.id, ["Actions", "Errands", "Costco"]);
+      const rawToken = "list-other-token";
+      createDeviceToken(other.id, "Other phone", hashRawToken(rawToken));
+
+      const response = await postCapture(`Bearer ${rawToken}`, {
+        ...validCapture,
+        client_capture_id: "7f5e6b7c-2a8d-4d9e-9f0a-1b2c3d4e5f60",
+        text: "add milk to my cost co list",
+      });
+      assert.equal(response.statusCode, 201);
+      const body = JSON.parse(response.body);
+      assert.deepEqual(queryRows(databasePath, `
+        SELECT items.node_id FROM items WHERE items.id = '${body.routed_item_id}';
+      `), [{ node_id: queryRows(databasePath, `SELECT id FROM nodes WHERE user_id = '${other.id}' AND name = 'Errands';`)[0]?.id }]);
+      assert.equal(queryRows(databasePath, `SELECT COUNT(*) AS count FROM nodes WHERE user_id = '${owner.id}' AND name = 'Costco';`)[0]?.count, 1);
+      assert.equal(queryRows(databasePath, `SELECT COUNT(*) AS count FROM nodes WHERE user_id = '${other.id}' AND name = 'Costco';`)[0]?.count, 0);
+      assert.equal(queryRows(databasePath, `SELECT COUNT(*) AS count FROM items WHERE node_id = '${ownerCostco.id}';`)[0]?.count, 0);
+    });
+  });
+
+  await suite.test("replays fuzzy list captures without routing or creating folders again", async () => {
+    await withDatabaseAsync(async (databasePath) => {
+      initializeDatabase();
+      const user = findOrCreateUserByEmail("list-replay@example.com");
+      createFolderPath(user.id, ["Actions", "Errands", "Costco"]);
+      const rawToken = "list-replay-token";
+      createDeviceToken(user.id, "Michael phone", hashRawToken(rawToken));
+      const clientCaptureId = "8a6f7c8d-3b9e-4e0f-8a1b-2c3d4e5f6071";
+
+      const firstResponse = await postCapture(`Bearer ${rawToken}`, {
+        ...validCapture,
+        client_capture_id: clientCaptureId,
+        text: "add peanut butter to my cosco list",
+      });
+      assert.equal(firstResponse.statusCode, 201);
+      const firstBody = JSON.parse(firstResponse.body);
+
+      const replayResponse = await postCapture(`Bearer ${rawToken}`, {
+        ...validCapture,
+        client_capture_id: clientCaptureId,
+        text: "add something else to my trader joes list",
+      });
+      assert.equal(replayResponse.statusCode, 201);
+      assert.deepEqual(JSON.parse(replayResponse.body), {
+        capture_id: firstBody.capture_id,
+        routed_item_id: firstBody.routed_item_id,
+        duplicate: true,
+      });
+      assert.equal(queryRows(databasePath, "SELECT COUNT(*) AS count FROM items;")[0]?.count, 1);
+      assert.equal(queryRows(databasePath, `SELECT COUNT(*) AS count FROM nodes WHERE user_id = '${user.id}' AND name = 'Trader Joes';`)[0]?.count, 0);
+      assert.equal(queryRows(databasePath, `SELECT COUNT(*) AS count FROM nodes WHERE user_id = '${user.id}';`)[0]?.count, 4);
+    });
+  });
+
   await suite.test("routes agent captures into a reused top-level Agent folder", async () => {
     await withDatabaseAsync(async (databasePath) => {
       initializeDatabase();

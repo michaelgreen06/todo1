@@ -77,6 +77,30 @@ with the original IDs and no new item:
 }
 ```
 
+## Spoken list captures
+
+`add <item> to <list> list` (for example, "add peanut butter to my costco list") files the item
+under `Actions / Errands / <list>` only when an existing Errands folder matches the spoken name:
+
+1. **Exact match.** Case, spaces, and punctuation are ignored: "cost co" matches `Costco`.
+2. **Unique fuzzy match.** Names are compared by consonant skeleton (first letter plus the
+   consonants, with vowels dropped and repeated letters collapsed). "casco", "cosco", and "costo"
+   match `Costco`. A fuzzy match needs a spoken skeleton of at least three and candidate skeleton
+   of at least four characters, the same first letter, a small spelling and length difference,
+   at most one skeleton edit per three characters, and a margin of at least two edits over the
+   runner-up. Multiword folder names require the same consonant skeleton for fuzzy matches.
+3. **Otherwise, review.** The item goes to `Actions / Errands` itself. No folder is created.
+
+Rules:
+
+- Matching uses only the user's direct children of `Actions / Errands`. Other users' folders are never considered.
+- `Actions / Errands` is created if missing. A store folder is never created from a capture; create one in the UI.
+- Ambiguous matches (for example, "costco" with both `Cosco` and `Casco` present) go to review.
+- Existing duplicate folders are not merged.
+- The stored capture text and the item body are unchanged. The spoken list name is visible only in the capture text.
+- Replaying a `client_capture_id` returns the original item and does not re-route.
+- Issue, meeting note, message, and agent routing are unchanged.
+
 ## Railway deployment
 
 Install and authenticate the Railway CLI:
