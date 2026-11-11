@@ -195,6 +195,37 @@ describe("WorkspaceApp", () => {
     expect(window.sessionStorage.getItem("todo.workspace.statusIds")).toContain("completed");
   });
 
+  it("shows each item's creation date in the viewer's timezone, including while editing", async () => {
+    const user = userEvent.setup();
+    const olderItem = {
+      ...inboxItem,
+      createdAt: "2026-06-04T23:30:00.000Z",
+      updatedAt: "2026-08-01T12:00:00.000Z",
+    };
+    const newerItem = { ...secondItem, createdAt: "2026-07-15T12:00:00.000Z" };
+    globalThis.fetch = async (): Promise<Response> => jsonResponse({
+      workspace: makeWorkspace({ todos: [olderItem, newerItem] }),
+    });
+
+    render(<WorkspaceApp />);
+    expect(await screen.findByRole("heading", { name: "Call client" })).toBeInTheDocument();
+    const dateFormat = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric" });
+    const olderCard = document.querySelector('[data-todo-id="todo-1"]');
+    const newerCard = document.querySelector('[data-todo-id="todo-2"]');
+    if (!(olderCard instanceof HTMLElement) || !(newerCard instanceof HTMLElement)) {
+      throw new Error("Both item cards must be rendered.");
+    }
+    const olderDate = within(olderCard).getByText(dateFormat.format(new Date(olderItem.createdAt)));
+    const newerDate = within(newerCard).getByText(dateFormat.format(new Date(newerItem.createdAt)));
+    expect(olderDate).toHaveAttribute("datetime", olderItem.createdAt);
+    expect(newerDate).toHaveAttribute("datetime", newerItem.createdAt);
+    expect(olderCard).toHaveTextContent("Created");
+    expect(newerCard).toHaveTextContent("Created");
+
+    await user.click(within(olderCard).getByRole("button", { name: "Edit" }));
+    expect(within(olderCard).getByText(dateFormat.format(new Date(olderItem.createdAt)))).toBeInTheDocument();
+  });
+
   it("defaults to inbox navigation and hides the folder tree there", async () => {
     globalThis.fetch = async (): Promise<Response> => jsonResponse({
       workspace: makeWorkspace({

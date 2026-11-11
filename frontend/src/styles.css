@@ -461,6 +461,12 @@ legend {
   margin-top: .7rem;
 }
 
+.todo-created {
+  margin: .55rem 0 0;
+  color: var(--muted);
+  font-size: .78rem;
+}
+
 .topbar-actions {
   margin-top: 0;
 }
