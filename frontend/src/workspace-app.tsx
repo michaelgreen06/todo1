@@ -45,6 +45,7 @@ const emptyFormStatus: FormStatus = { error: null, isSaving: false };
 const touchDragDelayMs = 350;
 const touchDragMoveTolerancePx = 8;
 const unsavedChangesMessage = "Unsaved changes will be lost if you leave this page.";
+const createdDateFormatter = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric" });
 
 function todoIdsEqual(left: ReadonlyArray<TodoItem>, right: ReadonlyArray<TodoItem>): boolean {
   return left.length === right.length && left.every((item, index) => item.id === right[index]?.id);
@@ -1339,6 +1340,7 @@ function TodoCard(props: {
             </div>
           </>
         )}
+        <p className="todo-created">Created <time dateTime={props.item.createdAt}>{createdDateFormatter.format(new Date(props.item.createdAt))}</time></p>
       </article>
     </li>
   );
